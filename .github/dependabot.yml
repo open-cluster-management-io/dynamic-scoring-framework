@@ -1,0 +1,43 @@
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      k8s-io:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+      go-opentelemetry-io:
+        patterns:
+          - "go.opentelemetry.io/*"
+      open-cluster-management-io:
+        patterns:
+          - "open-cluster-management.io/*"
+      prometheus:
+        patterns:
+          - "github.com/prometheus/*"
+      google:
+        patterns:
+          - "github.com/google/*"
+      spf13:
+        patterns:
+          - "github.com/spf13/*"
+      testing:
+        patterns:
+          - "github.com/onsi/*"
+    commit-message:
+      prefix: ":seedling: ci"
+      include: "scope"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: ":seedling:"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

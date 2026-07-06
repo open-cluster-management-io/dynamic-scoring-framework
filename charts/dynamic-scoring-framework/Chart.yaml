@@ -6,4 +6,9 @@ version: 0.1.0
 appVersion: "0.1.0"
 maintainers:
   - name: KA-Takeuchi
-    email: KA-Takeuchi@example.com
+    email: open-cluster-management@googlegroups.com
+  - name: rjung
+    email: rjung@redhat.com
+home: https://github.com/open-cluster-management-io/dynamic-scoring-framework
+sources:
+  - https://github.com/open-cluster-management-io/dynamic-scoring-framework

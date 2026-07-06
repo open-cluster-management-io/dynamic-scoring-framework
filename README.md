@@ -3,6 +3,17 @@
 Dynamic Scoring Framework is a framework for automating resource scoring in multi-cluster environments using Prometheus metrics.  
 It calculates dynamic scores for each cluster and provides foundational information for resource optimization and automated control.
 
+Repository: https://github.com/open-cluster-management-io/dynamic-scoring-framework
+
+> **Note:** The Git repository is named `dynamic-scoring-framework`, but the Go module path is `open-cluster-management.io/dynamic-scoring`. Import the module by module path, not by repository name.
+
+## Clone
+
+```bash
+git clone https://github.com/open-cluster-management-io/dynamic-scoring-framework.git
+cd dynamic-scoring-framework
+```
+
 ---
 
 ## Features
@@ -61,6 +72,16 @@ Refer to the [Optimization Using DSF](docs/optimization-using-dsf.md) documentat
 ## Development Environment Setup
 
 Please refer to the [development guide](docs/development.md) for instructions on setting up your local development environment.
+
+Run verification checks before submitting changes:
+
+```bash
+make verify
+make test-unit
+make test-chart
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## Directory Structure
 

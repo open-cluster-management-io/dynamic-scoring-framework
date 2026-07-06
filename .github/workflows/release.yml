@@ -1,0 +1,68 @@
+name: GoRelease
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  GO_VERSION: "1.24"
+  GITHUB_REF: ${{ github.ref }}
+  CHART_NAME: dynamic-scoring-framework
+
+jobs:
+  env:
+    name: prepare release env
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Get release version
+        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+      - name: Get trimmed release version
+        run: echo "TRIMED_RELEASE_VERSION=${RELEASE_VERSION#v}" >> "$GITHUB_ENV"
+      - name: Verify chart version
+        run: |
+          grep -q "version: ${TRIMED_RELEASE_VERSION}" "./charts/${CHART_NAME}/Chart.yaml"
+          grep -q "appVersion: \"${TRIMED_RELEASE_VERSION}\"" "./charts/${CHART_NAME}/Chart.yaml"
+    outputs:
+      RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+      TRIMED_RELEASE_VERSION: ${{ env.TRIMED_RELEASE_VERSION }}
+
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    needs: [env]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.11.2
+      - name: Package chart
+        run: |
+          mkdir -p release
+          helm package "charts/${CHART_NAME}" \
+            --version "${{ needs.env.outputs.TRIMED_RELEASE_VERSION }}" \
+            --destination release
+      - name: Generate changelog
+        run: |
+          echo "# Dynamic Scoring Framework ${{ needs.env.outputs.RELEASE_VERSION }}" > changelog.txt
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          body_path: changelog.txt
+          files: release/*.tgz
+          draft: true
+          prerelease: false
+          generate_release_notes: true

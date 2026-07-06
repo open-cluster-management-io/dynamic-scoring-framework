@@ -133,11 +133,30 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
-## TODO Implement verify, test-unit, test-integration targets
-verify:
-	@echo "Skipping verify (not implemented)"
-	@true
 .PHONY: verify
+verify: verify-fmt vet lint verify-codegen verify-chart ## Run all verification checks
+
+.PHONY: verify-fmt
+verify-fmt: ## Verify gofmt formatting
+	@out=$$(gofmt -s -l .); \
+	if [ -n "$$out" ]; then \
+		echo "gofmt needs to run on:"; \
+		echo "$$out"; \
+		exit 1; \
+	fi
+
+.PHONY: verify-codegen
+verify-codegen: controller-gen kustomize ## Verify generated manifests and CRDs are up to date
+	$(MAKE) manifests generate update-helm-crds
+	@if ! git diff --quiet; then \
+		echo "Generated files are out of date. Run 'make manifests generate update-helm-crds' and commit the changes."; \
+		git diff --stat; \
+		exit 1; \
+	fi
+
+.PHONY: verify-chart
+verify-chart: ## Verify Helm chart passes lint
+	$(HELM) lint $(CHART_PATH)
 
 # test-unit:
 # 	@echo "Skipping unit tests (not implemented)"
@@ -163,9 +182,8 @@ test-integration:
 .PHONY: test-integration
 
 .PHONY: test-chart
-test-chart: ## Run chart tests
-	@echo "Skipping chart tests (not implemented)"
-	@true
+test-chart: verify-chart ## Run Helm chart tests
+	@echo "Chart tests passed!"
 
 ##@ Build
 
@@ -280,6 +298,8 @@ $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
 ## Tool Binaries
+HELM ?= helm
+CHART_PATH ?= charts/dynamic-scoring-framework
 KUBECTL ?= kubectl
 KIND ?= kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
