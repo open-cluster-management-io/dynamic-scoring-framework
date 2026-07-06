@@ -14,7 +14,7 @@ func TestSanitizeResourceName(t *testing.T) {
 	}
 
 	empty := sanitizeResourceName("")
-	if empty != "score" {
+	if empty != defaultSanitizedScoreName {
 		t.Fatalf("unexpected sanitized empty name: %s", empty)
 	}
 }

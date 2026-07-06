@@ -85,7 +85,7 @@ func (r *DynamicScorerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // syncScoringHealthz checks the /healthz endpoint of the scoring service
 // host is extracted from the ConfigURL specified in the DynamicScorer spec
-func syncScoringHealthz(ctx context.Context, dynamicscorer *dynamicscoringv1alpha1.DynamicScorer) error {
+func syncScoringHealthz(_ context.Context, dynamicscorer *dynamicscoringv1alpha1.DynamicScorer) error {
 
 	klog.Infof("Checking scoring healthz for %s", dynamicscorer.Name)
 	parsedURL, err := url.Parse(dynamicscorer.Spec.ConfigURL)
@@ -104,7 +104,7 @@ func syncScoringHealthz(ctx context.Context, dynamicscorer *dynamicscoringv1alph
 		klog.Errorf("Request failed: %v", err)
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusOK {
 		dynamicscorer.Status.HealthStatus = common.ScorerHealthStatusActive
@@ -115,7 +115,7 @@ func syncScoringHealthz(ctx context.Context, dynamicscorer *dynamicscoringv1alph
 	return nil
 }
 
-func syncScoringConfig(ctx context.Context, dynamicscorer *dynamicscoringv1alpha1.DynamicScorer) error {
+func syncScoringConfig(_ context.Context, dynamicscorer *dynamicscoringv1alpha1.DynamicScorer) error {
 
 	klog.Infof("Sync config for %s", dynamicscorer.Name)
 
@@ -126,7 +126,7 @@ func syncScoringConfig(ctx context.Context, dynamicscorer *dynamicscoringv1alpha
 		klog.Errorf("Request failed: %v", err)
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var newConfig common.Config
 

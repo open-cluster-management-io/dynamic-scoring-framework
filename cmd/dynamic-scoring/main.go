@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	goflag "flag"
 	"fmt"
-	"math/rand"
 	"os"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -79,22 +77,43 @@ func normalizeAddOnDeploymentConfigValuesFunc() addonfactory.AddOnDeploymentConf
 //
 // This is intentionally best-effort: if the secret doesn't exist (or is malformed), we don't fail the addon.
 func hubPullSecretValuesFunc(kubeClient kubernetes.Interface) addonfactory.GetValuesFunc {
-	return func(cluster *clusterv1.ManagedCluster, addon *addonapiv1alpha1.ManagedClusterAddOn) (addonfactory.Values, error) {
-		secret, err := kubeClient.CoreV1().Secrets(hubPullSecretNamespace).Get(context.TODO(), hubPullSecretName, metav1.GetOptions{})
+	return func(
+		cluster *clusterv1.ManagedCluster,
+		addon *addonapiv1alpha1.ManagedClusterAddOn,
+	) (addonfactory.Values, error) {
+		secret, err := kubeClient.CoreV1().Secrets(hubPullSecretNamespace).Get(
+			context.TODO(),
+			hubPullSecretName,
+			metav1.GetOptions{},
+		)
 		if err != nil {
-			klog.V(2).Infof("hub pull secret %s/%s not available: %v", hubPullSecretNamespace, hubPullSecretName, err)
+			klog.V(2).Infof(
+				"hub pull secret %s/%s not available: %v",
+				hubPullSecretNamespace,
+				hubPullSecretName,
+				err,
+			)
 			klog.Info("hub pull secret ", hubPullSecretNamespace, "/", hubPullSecretName, " not available")
 			return nil, nil
 		}
 		if secret.Type != corev1.SecretTypeDockerConfigJson {
-			klog.Info("hub pull secret ", hubPullSecretNamespace, "/", hubPullSecretName, " has unexpected type ", secret.Type, " (expected ", corev1.SecretTypeDockerConfigJson, ")")
-			klog.Warningf("hub pull secret %s/%s has unexpected type %q (expected %q)", hubPullSecretNamespace, hubPullSecretName, secret.Type, corev1.SecretTypeDockerConfigJson)
+			klog.Warningf(
+				"hub pull secret %s/%s has unexpected type %q (expected %q)",
+				hubPullSecretNamespace,
+				hubPullSecretName,
+				secret.Type,
+				corev1.SecretTypeDockerConfigJson,
+			)
 			return nil, nil
 		}
 		b := secret.Data[corev1.DockerConfigJsonKey]
 		if len(b) == 0 {
-			klog.Info("hub pull secret ", hubPullSecretNamespace, "/", hubPullSecretName, " missing ", corev1.DockerConfigJsonKey, " key")
-			klog.Warningf("hub pull secret %s/%s missing %q key", hubPullSecretNamespace, hubPullSecretName, corev1.DockerConfigJsonKey)
+			klog.Warningf(
+				"hub pull secret %s/%s missing %q key",
+				hubPullSecretNamespace,
+				hubPullSecretName,
+				corev1.DockerConfigJsonKey,
+			)
 			return nil, nil
 		}
 
@@ -108,8 +127,6 @@ func hubPullSecretValuesFunc(kubeClient kubernetes.Interface) addonfactory.GetVa
 }
 
 func main() {
-	rand.Seed(time.Now().UTC().UnixNano())
-
 	pflag.CommandLine.SetNormalizeFunc(utilflag.WordSepNormalizeFunc)
 	pflag.CommandLine.AddGoFlagSet(goflag.CommandLine)
 
@@ -201,7 +218,11 @@ func (c *addManagerConfig) runController(ctx context.Context, kubeConfig *rest.C
 
 	klog.Info("agent install namespace for AddOn ", dynamic_scoring.AddonName)
 
-	agentAddon, err := addonfactory.NewAgentAddonFactory(dynamic_scoring.AddonName, dynamic_scoring.FS, "manifests/templates").
+	agentAddon, err := addonfactory.NewAgentAddonFactory(
+		dynamic_scoring.AddonName,
+		dynamic_scoring.FS,
+		"manifests/templates",
+	).
 		WithConfigGVRs(utils.AddOnDeploymentConfigGVR).
 		WithGetValuesFuncs(
 			dynamic_scoring.GetDefaultValues,

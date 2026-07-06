@@ -49,7 +49,7 @@ var _ = Describe("DynamicScoringConfig helpers", func() {
 			Expect(manifest.Namespace).To(Equal("cluster-a"))
 			Expect(manifest.Spec.Workload.Manifests).To(HaveLen(1))
 
-			cm, ok := manifest.Spec.Workload.Manifests[0].RawExtension.Object.(*corev1.ConfigMap)
+			cm, ok := manifest.Spec.Workload.Manifests[0].Object.(*corev1.ConfigMap)
 			Expect(ok).To(BeTrue())
 			Expect(cm.Name).To(Equal(common.DynamicScoringConfigName))
 			Expect(cm.Namespace).To(Equal(common.DynamicScoringNamespace))
@@ -91,8 +91,7 @@ var _ = Describe("DynamicScoringConfig helpers", func() {
 	Context("dimension format helper", func() {
 		It("defaults when format is empty", func() {
 			scorer := dynamicscoringv1alpha1.DynamicScorer{}
-			format, err := getValidScoreDimentionFormat(scorer)
-			Expect(err).NotTo(HaveOccurred())
+			format := getValidScoreDimentionFormat(scorer)
 			Expect(format).To(Equal("${scoreName}"))
 		})
 	})

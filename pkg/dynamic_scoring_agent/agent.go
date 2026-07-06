@@ -33,7 +33,6 @@ import (
 	"open-cluster-management.io/addon-framework/pkg/version"
 	addonv1alpha1client "open-cluster-management.io/api/client/addon/clientset/versioned"
 	clientset "open-cluster-management.io/api/client/cluster/clientset/versioned"
-	"open-cluster-management.io/api/client/cluster/listers/cluster/v1alpha1"
 	apiv1alpha2 "open-cluster-management.io/api/cluster/v1alpha1"
 	"open-cluster-management.io/dynamic-scoring/pkg/common"
 	"open-cluster-management.io/sdk-go/pkg/basecontroller/factory"
@@ -185,8 +184,16 @@ func (o *AgentOptions) RunAgent(ctx context.Context, kubeconfig *rest.Config) er
 		return err
 	}
 
-	hubKubeInformerFactory := informers.NewSharedInformerFactoryWithOptions(hubKubeClient, 10*time.Minute, informers.WithNamespace(o.SpokeClusterName))
-	spokeInformerFactory := informers.NewSharedInformerFactoryWithOptions(spokeKubeClient, 10*time.Minute, informers.WithNamespace(common.DynamicScoringNamespace))
+	hubKubeInformerFactory := informers.NewSharedInformerFactoryWithOptions(
+		hubKubeClient,
+		10*time.Minute,
+		informers.WithNamespace(o.SpokeClusterName),
+	)
+	spokeInformerFactory := informers.NewSharedInformerFactoryWithOptions(
+		spokeKubeClient,
+		10*time.Minute,
+		informers.WithNamespace(common.DynamicScoringNamespace),
+	)
 
 	_, controller := newAgentController(
 		hubClusterClient,
@@ -224,20 +231,19 @@ type ScoringWorker struct {
 }
 
 type agentController struct {
-	hubClusterClient          clientset.Interface
-	spokeKubeClient           kubernetes.Interface
-	addonClient               addonv1alpha1client.Interface
-	spokeConfigMapLister      corev1lister.ConfigMapLister
-	addOnPlacementScoreLister v1alpha1.AddOnPlacementScoreLister
-	clusterName               string
-	addonName                 string
-	addonNamespace            string
-	scoringWorkers            map[string]*ScoringWorker
-	workerLock                sync.Mutex
-	sourceAuth                map[string]string
-	scoringAuth               map[string]string
-	httpClient                *http.Client
-	previousLabelSets         map[string]map[string]struct{}
+	hubClusterClient     clientset.Interface
+	spokeKubeClient      kubernetes.Interface
+	addonClient          addonv1alpha1client.Interface
+	spokeConfigMapLister corev1lister.ConfigMapLister
+	clusterName          string
+	addonName            string
+	addonNamespace       string
+	scoringWorkers       map[string]*ScoringWorker
+	workerLock           sync.Mutex
+	sourceAuth           map[string]string
+	scoringAuth          map[string]string
+	httpClient           *http.Client
+	previousLabelSets    map[string]map[string]struct{}
 }
 
 func newAgentController(
@@ -433,7 +439,7 @@ func (c *agentController) performScoring(ctx context.Context, summary *common.Sc
 			if err != nil {
 				return fmt.Errorf("failed to query prometheus (%s): %w", summary.ScoreName, err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
 				return fmt.Errorf("prometheus query failed with status %d for %s", resp.StatusCode, summary.ScoreName)
@@ -446,10 +452,10 @@ func (c *agentController) performScoring(ctx context.Context, summary *common.Sc
 
 			var promResp common.PrometheusQueryRangeResponse
 			if err := json.Unmarshal(body, &promResp); err != nil {
-				return fmt.Errorf("Prometheus Response JSON unmarshal error: %w", err)
+				return fmt.Errorf("prometheus response JSON unmarshal error: %w", err)
 			}
 			if promResp.Status != "success" {
-				return fmt.Errorf("Prometheus query failed: %s", promResp.Status)
+				return fmt.Errorf("prometheus query failed: %s", promResp.Status)
 			}
 			scoringInputData = append(scoringInputData, promResp.Data.Result...)
 		}
@@ -483,7 +489,7 @@ func (c *agentController) performScoring(ctx context.Context, summary *common.Sc
 	if err != nil {
 		return fmt.Errorf("failed to query scoring endpoint (%s): %w", summary.ScoreName, err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	if resp2.StatusCode != http.StatusOK {
 		return fmt.Errorf("scoring endpoint returned status %d for %s", resp2.StatusCode, summary.ScoreName)
@@ -501,7 +507,7 @@ func (c *agentController) performScoring(ctx context.Context, summary *common.Sc
 
 	var scoringResp common.ScoringResponse
 	if err := json.Unmarshal(resp2Body, &scoringResp); err != nil {
-		return fmt.Errorf("Scoring Response JSON unmarshal error: %w", err)
+		return fmt.Errorf("scoring response JSON unmarshal error: %w", err)
 	}
 
 	currentLabels := make(map[string]struct{})
@@ -608,20 +614,29 @@ func (c *agentController) fetchScoringAuth(ctx context.Context, summary common.S
 			if val, ok := secret.Data[summary.ScoringEndpointAuthKey]; ok {
 				c.scoringAuth[summary.ScoreName] = string(val)
 			} else {
-				return fmt.Errorf("scoring auth key not found in secret (%s): %s", summary.ScoreName, summary.ScoringEndpointAuthKey)
+				return fmt.Errorf(
+					"scoring auth key not found in secret (%s): %s",
+					summary.ScoreName,
+					summary.ScoringEndpointAuthKey,
+				)
 			}
 		}
 	}
 	return nil
 }
 
-func (c *agentController) updateAddOnPlacementScore(ctx context.Context, summary *common.ScorerSummary, currentPlaceHolderMapping map[string]map[string]string, currentScores map[string]float64) error {
-
-	// check https://github.com/open-cluster-management-io/addon-contrib/blob/main/resource-usage-collect-addon/pkg/addon/agent/agent.go
+func (c *agentController) updateAddOnPlacementScore(
+	ctx context.Context,
+	summary *common.ScorerSummary,
+	currentPlaceHolderMapping map[string]map[string]string,
+	currentScores map[string]float64,
+) error {
+	// See resource-usage-collect-addon agent for reference implementation.
 	sanitizedName := sanitizeResourceName(summary.ScoreName)
 	klog.Info("Checking AddOnPlacementScore: ", c.clusterName, sanitizedName)
 
-	addonPlacementScore, err := c.hubClusterClient.ClusterV1alpha1().AddOnPlacementScores(c.clusterName).Get(ctx, sanitizedName, metav1.GetOptions{})
+	scoreClient := c.hubClusterClient.ClusterV1alpha1().AddOnPlacementScores(c.clusterName)
+	addonPlacementScore, err := scoreClient.Get(ctx, sanitizedName, metav1.GetOptions{})
 	klog.Info("Current AddOnPlacementScore: ", addonPlacementScore, "err: ", err)
 
 	items := []apiv1alpha2.AddOnPlacementScoreItem{}
@@ -654,7 +669,7 @@ func (c *agentController) updateAddOnPlacementScore(ctx context.Context, summary
 				Scores: items,
 			},
 		}
-		_, err = c.hubClusterClient.ClusterV1alpha1().AddOnPlacementScores(c.clusterName).Create(ctx, addonPlacementScore, metav1.CreateOptions{})
+		_, err = scoreClient.Create(ctx, addonPlacementScore, metav1.CreateOptions{})
 		if err != nil {
 			return err
 		}
@@ -665,7 +680,7 @@ func (c *agentController) updateAddOnPlacementScore(ctx context.Context, summary
 
 	klog.Info("AddOnPlacementScore found, updating existing one")
 	addonPlacementScore.Status.Scores = items
-	_, err = c.hubClusterClient.ClusterV1alpha1().AddOnPlacementScores(c.clusterName).UpdateStatus(ctx, addonPlacementScore, metav1.UpdateOptions{})
+	_, err = scoreClient.UpdateStatus(ctx, addonPlacementScore, metav1.UpdateOptions{})
 	return err
 }
 
@@ -673,9 +688,15 @@ func labelKey(values ...string) string {
 	return strings.Join(values, "||")
 }
 
+const defaultSanitizedScoreName = "score"
+
+func isAlphaNum(r rune) bool {
+	return ('a' <= r && r <= 'z') || ('0' <= r && r <= '9')
+}
+
 func sanitizeResourceName(name string) string {
 	if name == "" {
-		return "score"
+		return defaultSanitizedScoreName
 	}
 	// lowercase
 	s := strings.ToLower(name)
@@ -695,20 +716,20 @@ func sanitizeResourceName(name string) string {
 		s = s[:253]
 		// if cut ends with non-alnum, trim trailing non-alnum
 		s = strings.TrimRightFunc(s, func(r rune) bool {
-			return !(('a' <= r && r <= 'z') || ('0' <= r && r <= '9'))
+			return !isAlphaNum(r)
 		})
 	}
 
 	// ensure starts with alnum
 	if s == "" {
-		s = "score"
+		s = defaultSanitizedScoreName
 	}
 	first := s[0]
 	last := s[len(s)-1]
-	if !(('a' <= first && first <= 'z') || ('0' <= first && first <= '9')) {
+	if !isAlphaNum(rune(first)) {
 		s = "a" + s
 	}
-	if !(('a' <= last && last <= 'z') || ('0' <= last && last <= '9')) {
+	if !isAlphaNum(rune(last)) {
 		s = s + "a"
 	}
 

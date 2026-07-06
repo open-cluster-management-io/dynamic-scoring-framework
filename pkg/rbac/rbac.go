@@ -30,10 +30,26 @@ func AddonRBAC(kubeConfig *rest.Config) agent.PermissionConfigFunc {
 				Namespace: cluster.Name,
 			},
 			Rules: []rbacv1.PolicyRule{
-				{Verbs: []string{"get", "list", "watch"}, Resources: []string{"configmaps"}, APIGroups: []string{""}},
-				{Verbs: []string{"get", "list", "watch"}, Resources: []string{"managedclusteraddons"}, APIGroups: []string{"addon.open-cluster-management.io"}},
-				{Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}, Resources: []string{"addonplacementscores"}, APIGroups: []string{"cluster.open-cluster-management.io"}},
-				{Verbs: []string{"update", "patch"}, Resources: []string{"addonplacementscores/status"}, APIGroups: []string{"cluster.open-cluster-management.io"}},
+				{
+					Verbs:     []string{"get", "list", "watch"},
+					Resources: []string{"configmaps"},
+					APIGroups: []string{""},
+				},
+				{
+					Verbs:     []string{"get", "list", "watch"},
+					Resources: []string{"managedclusteraddons"},
+					APIGroups: []string{"addon.open-cluster-management.io"},
+				},
+				{
+					Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+					Resources: []string{"addonplacementscores"},
+					APIGroups: []string{"cluster.open-cluster-management.io"},
+				},
+				{
+					Verbs:     []string{"update", "patch"},
+					Resources: []string{"addonplacementscores/status"},
+					APIGroups: []string{"cluster.open-cluster-management.io"},
+				},
 			},
 		}
 
@@ -70,7 +86,11 @@ func AddonRBAC(kubeConfig *rest.Config) agent.PermissionConfigFunc {
 		_, err = kubeclient.RbacV1().RoleBindings(cluster.Name).Get(context.TODO(), binding.Name, metav1.GetOptions{})
 		switch {
 		case errors.IsNotFound(err):
-			_, createErr := kubeclient.RbacV1().RoleBindings(cluster.Name).Create(context.TODO(), binding, metav1.CreateOptions{})
+			_, createErr := kubeclient.RbacV1().RoleBindings(cluster.Name).Create(
+				context.TODO(),
+				binding,
+				metav1.CreateOptions{},
+			)
 			if createErr != nil {
 				return createErr
 			}

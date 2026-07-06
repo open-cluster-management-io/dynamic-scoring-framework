@@ -181,7 +181,7 @@ func isValidURL(s string) bool {
 }
 
 func buildClusterToSummaries(
-	ctx context.Context,
+	_ context.Context,
 	clusters []clusterv1.ManagedCluster,
 	scorers []dynamicscoringv1alpha1.DynamicScorer,
 	maskMap map[string]struct{},
@@ -288,11 +288,7 @@ func buildClusterToSummaries(
 				continue
 			}
 
-			scoreDimensionFormat, err := getValidScoreDimentionFormat(scorer)
-			if err != nil {
-				klog.ErrorS(err, "Failed to get valid Score Dimension Format", "scorer", scorer.Name)
-				continue
-			}
+			scoreDimensionFormat := getValidScoreDimentionFormat(scorer)
 
 			// build summary
 			summary := common.ScorerSummary{
@@ -375,7 +371,7 @@ func updateConfigManifestWork(ctx context.Context, c client.Client, clusterName 
 		// check for differences
 		var existingCM corev1.ConfigMap
 		for _, m := range existing.Spec.Workload.Manifests {
-			if err := json.Unmarshal(m.RawExtension.Raw, &existingCM); err == nil && existingCM.Name == common.DynamicScoringConfigName {
+			if err := json.Unmarshal(m.Raw, &existingCM); err == nil && existingCM.Name == common.DynamicScoringConfigName {
 				existingSummariesJSON := existingCM.Data["summaries"]
 				var existingSummaries []common.ScorerSummary
 				if err := json.Unmarshal([]byte(existingSummariesJSON), &existingSummaries); err != nil {
@@ -459,6 +455,9 @@ func getValidSourceFullEndpoint(scorer dynamicscoringv1alpha1.DynamicScorer) (st
 	}
 
 	fullEndpoint, err := url.JoinPath(sourceHost, sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to join source URL path: %w", err)
+	}
 	if !isValidURL(fullEndpoint) {
 		return "", fmt.Errorf("invalid Source Full URL: %s", fullEndpoint)
 	}
@@ -487,6 +486,9 @@ func getValidScoringFullEndpoint(scorer dynamicscoringv1alpha1.DynamicScorer) (s
 	}
 
 	fullEndpoint, err := url.JoinPath(scoringHost, scoringPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to join scoring URL path: %w", err)
+	}
 	if !isValidURL(fullEndpoint) {
 		return "", fmt.Errorf("invalid Scoring Full URL: %s", fullEndpoint)
 	}
@@ -497,9 +499,9 @@ func getValidSourceAuthSecretRef(scorer dynamicscoringv1alpha1.DynamicScorer) (s
 	if scorer.Spec.Source.Auth == nil {
 		return "", "", nil
 	} else if scorer.Spec.Source.Auth.TokenSecretRef.Name == "" {
-		return "", "", fmt.Errorf("Source Auth Secret Ref Name is empty")
+		return "", "", fmt.Errorf("source auth secret ref name is empty")
 	} else if scorer.Spec.Source.Auth.TokenSecretRef.Key == "" {
-		return "", "", fmt.Errorf("Source Auth Secret Ref Key is empty")
+		return "", "", fmt.Errorf("source auth secret ref key is empty")
 	}
 	return scorer.Spec.Source.Auth.TokenSecretRef.Name, scorer.Spec.Source.Auth.TokenSecretRef.Key, nil
 }
@@ -507,9 +509,9 @@ func getValidScoringAuthSecretRef(scorer dynamicscoringv1alpha1.DynamicScorer) (
 	if scorer.Spec.Scoring.Auth == nil {
 		return "", "", nil
 	} else if scorer.Spec.Scoring.Auth.TokenSecretRef.Name == "" {
-		return "", "", fmt.Errorf("Scoring Auth Secret Ref Name is empty")
+		return "", "", fmt.Errorf("scoring auth secret ref name is empty")
 	} else if scorer.Spec.Scoring.Auth.TokenSecretRef.Key == "" {
-		return "", "", fmt.Errorf("Scoring Auth Secret Ref Key is empty")
+		return "", "", fmt.Errorf("scoring auth secret ref key is empty")
 	}
 	return scorer.Spec.Scoring.Auth.TokenSecretRef.Name, scorer.Spec.Scoring.Auth.TokenSecretRef.Key, nil
 }
@@ -573,9 +575,9 @@ func getValidScoreDestination(scorer dynamicscoringv1alpha1.DynamicScorer) (comm
 	return "", fmt.Errorf("failed to fetch valid scoreDestination")
 }
 
-func getValidScoreDimentionFormat(scorer dynamicscoringv1alpha1.DynamicScorer) (string, error) {
+func getValidScoreDimentionFormat(scorer dynamicscoringv1alpha1.DynamicScorer) string {
 	if scorer.Spec.ScoreDimensionFormat != "" {
-		return scorer.Spec.ScoreDimensionFormat, nil
+		return scorer.Spec.ScoreDimensionFormat
 	}
-	return "${scoreName}", nil
+	return "${scoreName}"
 }

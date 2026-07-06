@@ -93,7 +93,7 @@ func TestAgentHealthProber(t *testing.T) {
 }
 
 func TestGetDefaultValues_DoesNotMutateEnv(t *testing.T) {
-	os.Unsetenv("DYNAMIC_SCORING_ADDON_IMAGE")
+	_ = os.Unsetenv("DYNAMIC_SCORING_ADDON_IMAGE")
 	cluster := &clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-c"}}
 	addon := &addonapiv1alpha1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "addon-c"}}
 
