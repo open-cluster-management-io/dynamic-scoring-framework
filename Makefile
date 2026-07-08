@@ -34,6 +34,7 @@ endif
 # scaffolded by default. However, you might want to replace it to use other
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
+GO_VERSION ?= $(shell sed -n 's/^go //p' go.mod | cut -d. -f1,2)
 KIND_PROVIDER ?= docker
 ifeq ($(CONTAINER_TOOL),podman)
 KIND_PROVIDER := podman
@@ -109,7 +110,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	else \
 		$(KIND_ENV) $(KIND) create cluster --name $(KIND_CLUSTER); \
 	fi
-	$(CONTAINER_TOOL) build -t $(E2E_CONTROLLER_IMAGE) -f Dockerfile .
+	$(CONTAINER_TOOL) build -t $(E2E_CONTROLLER_IMAGE) --build-arg GO_VERSION=$(GO_VERSION) -f Dockerfile .
 	$(KIND_ENV) $(KIND) load docker-image $(E2E_CONTROLLER_IMAGE) --name $(KIND_CLUSTER)
 
 .PHONY: test-e2e
@@ -197,11 +198,11 @@ run: manifests generate fmt vet ## Run a controller from your host.
 
 .PHONY: docker-build-controller
 docker-build-controller: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build $(IMAGE_BUILD_EXTRA_FLAGS) -t ${IMG_CONTROLLER} .
+	$(CONTAINER_TOOL) build $(IMAGE_BUILD_EXTRA_FLAGS) --build-arg GO_VERSION=$(GO_VERSION) -t ${IMG_CONTROLLER} .
 
 .PHONY: docker-build-addon
 docker-build-addon: ## Build docker image with the addon.
-	$(CONTAINER_TOOL) build $(IMAGE_BUILD_EXTRA_FLAGS) -t ${IMG_ADDON} -f Dockerfile.addon --no-cache .
+	$(CONTAINER_TOOL) build $(IMAGE_BUILD_EXTRA_FLAGS) --build-arg GO_VERSION=$(GO_VERSION) -t ${IMG_ADDON} -f Dockerfile.addon --no-cache .
 
 .PHONY: docker-push-controller
 docker-push-controller: ## Push docker image with the manager.

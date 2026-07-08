@@ -136,7 +136,3 @@ type DynamicScorerList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []DynamicScorer `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&DynamicScorer{}, &DynamicScorerList{})
-}

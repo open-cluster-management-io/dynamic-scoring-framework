@@ -11,9 +11,6 @@ on:
       - main
       - release-*
 
-env:
-  GO_VERSION: "1.24"
-
 jobs:
   verify:
     name: verify
@@ -24,7 +21,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
       - name: Setup Helm
         uses: azure/setup-helm@v5
@@ -42,7 +39,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
       - name: Build
         run: make build
@@ -56,7 +53,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
       - name: Unit tests
         run: make test-unit
@@ -70,7 +67,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
       - name: Integration tests
         run: make test-integration
