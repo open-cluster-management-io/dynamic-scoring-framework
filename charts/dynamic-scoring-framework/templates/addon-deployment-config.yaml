@@ -20,6 +20,6 @@ spec:
   agentInstallNamespace: {{ .Values.spokeSetting.namespace }}
   customizedVariables:
     - name: Image
-      value: "{{ .Values.spokeSetting.agent.image.name }}:{{ .Values.spokeSetting.agent.image.tag }}-aarch64"
+      value: "{{ .Values.spokeSetting.agent.image.name }}:{{ .Values.spokeSetting.agent.image.tag }}"
     - name: ImagePullSecrets
       value: '["hub-registry-secret"]'
