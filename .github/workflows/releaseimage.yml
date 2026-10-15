@@ -22,7 +22,9 @@ jobs:
         with:
           fetch-depth: 1
       - name: Get release version
-        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+        run: |
+          [[ "$GITHUB_REF" == refs/tags/v*.*.* ]] || { echo "Image releases require a version tag ref"; exit 1; }
+          echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
     outputs:
       RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
 
@@ -49,7 +51,7 @@ jobs:
       - name: Build and push controller image
         if: matrix.image == 'controller'
         env:
-          IMAGE_BUILD_EXTRA_FLAGS: --build-arg OS=linux --build-arg ARCH=${{ matrix.arch }}
+          IMAGE_BUILD_EXTRA_FLAGS: --platform linux/${{ matrix.arch }} --build-arg OS=linux --build-arg ARCH=${{ matrix.arch }}
           CONTROLLER_IMAGE_TAG: ${{ needs.env.outputs.RELEASE_VERSION }}-${{ matrix.arch }}
         run: |
           make docker-build-controller
@@ -57,7 +59,7 @@ jobs:
       - name: Build and push addon image
         if: matrix.image == 'addon'
         env:
-          IMAGE_BUILD_EXTRA_FLAGS: --build-arg OS=linux --build-arg ARCH=${{ matrix.arch }}
+          IMAGE_BUILD_EXTRA_FLAGS: --platform linux/${{ matrix.arch }} --build-arg OS=linux --build-arg ARCH=${{ matrix.arch }}
           ADDON_IMAGE_TAG: ${{ needs.env.outputs.RELEASE_VERSION }}-${{ matrix.arch }}
         run: |
           make docker-build-addon

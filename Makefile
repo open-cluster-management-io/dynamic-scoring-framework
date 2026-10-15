@@ -184,6 +184,7 @@ test-integration:
 
 .PHONY: test-chart
 test-chart: verify-chart ## Run Helm chart tests
+	HELM="$(HELM)" CHART_PATH="$(abspath $(CHART_PATH))" go test -count=1 ./charts/...
 	@echo "Chart tests passed!"
 
 ##@ Build
@@ -246,21 +247,18 @@ image-manifest: image-manifest-controller image-manifest-addon
 
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
+# architectures. (i.e. make docker-buildx IMG_CONTROLLER=myregistry/mycontroller:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
 # - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
+# - be able to push the image to your registry (set IMG_CONTROLLER=<myregistry/image>:<tag>)
 # To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name dynamic-scoring-framework-builder
-	$(CONTAINER_TOOL) buildx use dynamic-scoring-framework-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG_CONTROLLER} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm dynamic-scoring-framework-builder
-	rm Dockerfile.cross
+	$(CONTAINER_TOOL) buildx create --name dynamic-scoring-framework-builder --driver docker-container
+	trap '$(CONTAINER_TOOL) buildx rm dynamic-scoring-framework-builder' EXIT; \
+	$(CONTAINER_TOOL) buildx build --builder dynamic-scoring-framework-builder --push --platform=$(PLATFORMS) \
+		--build-arg GO_VERSION=$(GO_VERSION) --tag ${IMG_CONTROLLER} -f Dockerfile .
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.

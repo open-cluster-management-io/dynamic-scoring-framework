@@ -135,6 +135,42 @@ The Dynamic Scoring Framework consists of two main components:
 1. **Controller**: Runs on the hub cluster, manages DynamicScorer and DynamicScoringConfig CRs
 2. **Addon Agent**: Runs on worker clusters, performs actual scoring operations
 
+Published controller and addon images use a common multi-architecture tag for
+`linux/amd64` and `linux/arm64`. The release workflow builds `<version>-amd64` and
+`<version>-arm64` before publishing the `<version>` manifest. The main-only
+postsubmit workflow similarly publishes `latest-amd64`, `latest-arm64`, then
+`latest`. Both standard and ARM addon deployment configs use the common tag;
+their names and Placement references remain unchanged.
+
+Postsubmit runs are serialized without cancelling an active publisher, because
+the architecture child tags are mutable. Immediately before each architecture
+push and common manifest invocation, the workflow checks the current `origin/main`
+SHA against the run's revision. Old runs, including retries of completed or failed
+jobs, skip publishing successfully once main has advanced; stale builds may still
+run. Retry the current main run to publish, rather than retrying an older revision.
+
+Local `docker-build-controller` and `docker-build-addon` builds default to the
+container runtime's target platform, compiling Go natively in the builder stage.
+For a different target, set `--platform` and keep any explicit `OS`/`ARCH` build
+arguments consistent with it. For example:
+
+```bash
+make docker-build-addon ADDON_IMAGE_TAG=dev-arm64 \
+  IMAGE_BUILD_EXTRA_FLAGS="--platform linux/arm64 --build-arg OS=linux --build-arg ARCH=arm64"
+```
+
+For a controller multi-platform build and registry push, use the actual Dockerfile
+with buildx (requires registry credentials):
+
+```bash
+make docker-buildx IMG_CONTROLLER=your-registry/dynamic-scoring-controller:dev \
+  PLATFORMS=linux/amd64,linux/arm64
+```
+
+The buildx target retains its wider default platform list; the release and
+postsubmit workflows publish only amd64 and arm64. The single-platform builds
+below are appropriate for local Kind clusters of the same architecture.
+
 ### Dynamic Scoring Framework Controller
 
 The controller manages the lifecycle of DynamicScorer resources and synchronizes configurations to worker clusters.
@@ -1088,4 +1124,3 @@ This development guide covered:
 5. **Scorers**: Deploying various types of dynamic scorers
 6. **Optimization**: Using AddOnPlacementScores for intelligent workload placement
 7. **MCP Integration**: Enabling AI-assisted optimization with VS Code Copilot
-
