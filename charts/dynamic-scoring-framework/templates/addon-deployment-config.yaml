@@ -9,7 +9,7 @@ spec:
     - name: Image
       value: "{{ .Values.spokeSetting.agent.image.name }}:{{ .Values.spokeSetting.agent.image.tag }}"
     - name: ImagePullSecrets
-      value: '["hub-registry-secret"]'
+      value: {{ .Values.spokeSetting.agent.imagePullSecrets | toJson | quote }}
 ---
 apiVersion: addon.open-cluster-management.io/v1alpha1
 kind: AddOnDeploymentConfig
@@ -22,4 +22,4 @@ spec:
     - name: Image
       value: "{{ .Values.spokeSetting.agent.image.name }}:{{ .Values.spokeSetting.agent.image.tag }}"
     - name: ImagePullSecrets
-      value: '["hub-registry-secret"]'
+      value: {{ .Values.spokeSetting.agent.imagePullSecrets | toJson | quote }}

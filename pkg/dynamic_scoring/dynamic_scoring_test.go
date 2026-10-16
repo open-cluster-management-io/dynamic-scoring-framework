@@ -1,17 +1,22 @@
 package dynamic_scoring
 
 import (
+	"context"
 	"os"
+	"reflect"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
+	"open-cluster-management.io/addon-framework/pkg/addonfactory"
 	addonapiv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 )
 
 func TestGetDefaultValues_DefaultImage(t *testing.T) {
-	t.Setenv("DYNAMIC_SCORING_ADDON_IMAGE", "")
+	t.Setenv(AddonImageEnvVar, "")
+	t.Setenv(AddonImagePullSecretsEnvVar, "")
 
 	cluster := &clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-a"}}
 	addon := &addonapiv1alpha1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "dynamic-scoring"}}
@@ -47,7 +52,8 @@ func TestGetDefaultValues_DefaultImage(t *testing.T) {
 }
 
 func TestGetDefaultValues_EnvOverride(t *testing.T) {
-	t.Setenv("DYNAMIC_SCORING_ADDON_IMAGE", "example.com/custom:latest")
+	t.Setenv(AddonImageEnvVar, "example.com/custom:latest")
+	t.Setenv(AddonImagePullSecretsEnvVar, "")
 
 	cluster := &clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-b"}}
 	addon := &addonapiv1alpha1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "addon-b"}}
@@ -64,6 +70,201 @@ func TestGetDefaultValues_EnvOverride(t *testing.T) {
 	if image != "example.com/custom:latest" {
 		t.Fatalf("unexpected Image: %s", image)
 	}
+}
+
+func TestGetDefaultValues_ImagePullSecretsFromEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "unset", raw: "", want: nil},
+		{name: "one secret", raw: `["hub-registry-secret"]`, want: []string{"hub-registry-secret"}},
+		{
+			name: "multiple secrets",
+			raw:  `["klusterlet-secret","dsf-secret"]`,
+			want: []string{"klusterlet-secret", "dsf-secret"},
+		},
+		{name: "empty list", raw: `[]`, want: []string{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(AddonImagePullSecretsEnvVar, tt.raw)
+			cluster := &clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-a"}}
+			addon := &addonapiv1alpha1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "dynamic-scoring"}}
+
+			values, err := GetDefaultValues(cluster, addon)
+			if err != nil {
+				t.Fatalf("GetDefaultValues returned error: %v", err)
+			}
+
+			got, ok := values["ImagePullSecrets"].([]string)
+			if !ok {
+				t.Fatalf("expected ImagePullSecrets []string, got %T", values["ImagePullSecrets"])
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("unexpected ImagePullSecrets: got %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetDefaultValues_InvalidImagePullSecretsEnv(t *testing.T) {
+	t.Setenv(AddonImagePullSecretsEnvVar, `"hub-registry-secret"`)
+	cluster := &clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-a"}}
+	addon := &addonapiv1alpha1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "dynamic-scoring"}}
+
+	if _, err := GetDefaultValues(cluster, addon); err == nil {
+		t.Fatal("expected an error for ImagePullSecrets that is not a JSON array")
+	}
+}
+
+func TestAgentInstallNamespaceFromDeploymentConfigOrEnv(t *testing.T) {
+	t.Run("deployment config overrides environment and addon namespace", func(t *testing.T) {
+		t.Setenv(AddonInstallNamespaceEnvVar, "environment-namespace")
+		addon := addonWithDeploymentConfig("managed-addon-namespace")
+		getter := staticAddOnDeploymentConfigGetter{
+			config: &addonapiv1alpha1.AddOnDeploymentConfig{
+				Spec: addonapiv1alpha1.AddOnDeploymentConfigSpec{AgentInstallNamespace: "config-namespace"},
+			},
+		}
+
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(getter)(addon)
+		if err != nil {
+			t.Fatalf("namespace resolver returned error: %v", err)
+		}
+		if got != "config-namespace" {
+			t.Fatalf("namespace=%q; want config-namespace", got)
+		}
+	})
+
+	t.Run("API-defaulted deployment namespace overrides environment", func(t *testing.T) {
+		t.Setenv(AddonInstallNamespaceEnvVar, "environment-namespace")
+		addon := addonWithDeploymentConfig("")
+		getter := staticAddOnDeploymentConfigGetter{
+			config: &addonapiv1alpha1.AddOnDeploymentConfig{
+				Spec: addonapiv1alpha1.AddOnDeploymentConfigSpec{
+					AgentInstallNamespace: addonfactory.AddonDefaultInstallNamespace,
+				},
+			},
+		}
+
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(getter)(addon)
+		if err != nil {
+			t.Fatalf("namespace resolver returned error: %v", err)
+		}
+		if got != addonfactory.AddonDefaultInstallNamespace {
+			t.Fatalf("namespace=%q; want %s", got, addonfactory.AddonDefaultInstallNamespace)
+		}
+	})
+
+	t.Run("API-defaulted deployment namespace is honored without environment", func(t *testing.T) {
+		t.Setenv(AddonInstallNamespaceEnvVar, "")
+		addon := addonWithDeploymentConfig("")
+		getter := staticAddOnDeploymentConfigGetter{
+			config: &addonapiv1alpha1.AddOnDeploymentConfig{
+				Spec: addonapiv1alpha1.AddOnDeploymentConfigSpec{
+					AgentInstallNamespace: addonfactory.AddonDefaultInstallNamespace,
+				},
+			},
+		}
+
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(getter)(addon)
+		if err != nil {
+			t.Fatalf("namespace resolver returned error: %v", err)
+		}
+		if got != addonfactory.AddonDefaultInstallNamespace {
+			t.Fatalf("namespace=%q; want %s", got, addonfactory.AddonDefaultInstallNamespace)
+		}
+	})
+
+	t.Run("environment overrides deprecated addon namespace", func(t *testing.T) {
+		t.Setenv(AddonInstallNamespaceEnvVar, "environment-namespace")
+		addon := &addonapiv1alpha1.ManagedClusterAddOn{
+			Spec: addonapiv1alpha1.ManagedClusterAddOnSpec{InstallNamespace: "managed-addon-namespace"},
+		}
+
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(addon)
+		if err != nil {
+			t.Fatalf("namespace resolver returned error: %v", err)
+		}
+		if got != "environment-namespace" {
+			t.Fatalf("namespace=%q; want environment-namespace", got)
+		}
+	})
+
+	t.Run("environment can select addon framework default", func(t *testing.T) {
+		t.Setenv(AddonInstallNamespaceEnvVar, "open-cluster-management-agent-addon")
+		addon := &addonapiv1alpha1.ManagedClusterAddOn{
+			Spec: addonapiv1alpha1.ManagedClusterAddOnSpec{InstallNamespace: "managed-addon-namespace"},
+		}
+
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(addon)
+		if err != nil {
+			t.Fatalf("namespace resolver returned error: %v", err)
+		}
+		if got != "open-cluster-management-agent-addon" {
+			t.Fatalf("namespace=%q; want open-cluster-management-agent-addon", got)
+		}
+	})
+
+	t.Run("DSF default ignores deprecated addon namespace", func(t *testing.T) {
+		t.Setenv(AddonInstallNamespaceEnvVar, "")
+		addon := &addonapiv1alpha1.ManagedClusterAddOn{
+			Spec: addonapiv1alpha1.ManagedClusterAddOnSpec{InstallNamespace: "managed-addon-namespace"},
+		}
+
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(addon)
+		if err != nil {
+			t.Fatalf("namespace resolver returned error: %v", err)
+		}
+		if got != DefaultInstallationNamespace {
+			t.Fatalf("namespace=%q; want %s", got, DefaultInstallationNamespace)
+		}
+	})
+
+	t.Run("environment namespace is trimmed", func(t *testing.T) {
+		t.Setenv(AddonInstallNamespaceEnvVar, "  custom-agent  ")
+		addon := &addonapiv1alpha1.ManagedClusterAddOn{}
+
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(addon)
+		if err != nil {
+			t.Fatalf("namespace resolver returned error: %v", err)
+		}
+		if got != "custom-agent" {
+			t.Fatalf("namespace=%q; want custom-agent", got)
+		}
+	})
+}
+
+func addonWithDeploymentConfig(installNamespace string) *addonapiv1alpha1.ManagedClusterAddOn {
+	return &addonapiv1alpha1.ManagedClusterAddOn{
+		Spec: addonapiv1alpha1.ManagedClusterAddOnSpec{InstallNamespace: installNamespace},
+		Status: addonapiv1alpha1.ManagedClusterAddOnStatus{
+			ConfigReferences: []addonapiv1alpha1.ConfigReference{{
+				ConfigGroupResource: addonapiv1alpha1.ConfigGroupResource{
+					Group:    "addon.open-cluster-management.io",
+					Resource: "addondeploymentconfigs",
+				},
+				DesiredConfig: &addonapiv1alpha1.ConfigSpecHash{
+					ConfigReferent: addonapiv1alpha1.ConfigReferent{Namespace: "hub", Name: "agent-config"},
+					SpecHash:       "spec-hash",
+				},
+			}},
+		},
+	}
+}
+
+type staticAddOnDeploymentConfigGetter struct {
+	config *addonapiv1alpha1.AddOnDeploymentConfig
+	err    error
+}
+
+func (g staticAddOnDeploymentConfigGetter) Get(
+	_ context.Context, _, _ string,
+) (*addonapiv1alpha1.AddOnDeploymentConfig, error) {
+	return g.config, g.err
 }
 
 func TestNewRegistrationOption(t *testing.T) {
@@ -93,7 +294,10 @@ func TestAgentHealthProber(t *testing.T) {
 }
 
 func TestGetDefaultValues_DoesNotMutateEnv(t *testing.T) {
-	_ = os.Unsetenv("DYNAMIC_SCORING_ADDON_IMAGE")
+	t.Setenv(AddonImageEnvVar, "")
+	t.Setenv(AddonImagePullSecretsEnvVar, "")
+	imageBefore := os.Getenv(AddonImageEnvVar)
+	pullSecretsBefore := os.Getenv(AddonImagePullSecretsEnvVar)
 	cluster := &clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-c"}}
 	addon := &addonapiv1alpha1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "addon-c"}}
 
@@ -103,6 +307,44 @@ func TestGetDefaultValues_DoesNotMutateEnv(t *testing.T) {
 	}
 
 	if _, ok := values["ImagePullSecrets"]; !ok {
-		t.Fatalf("expected ImagePullSecrets key to exist")
+		t.Fatal("expected ImagePullSecrets key to exist")
 	}
+	if got := os.Getenv(AddonImageEnvVar); got != imageBefore {
+		t.Errorf("%s changed from %q to %q", AddonImageEnvVar, imageBefore, got)
+	}
+	if got := os.Getenv(AddonImagePullSecretsEnvVar); got != pullSecretsBefore {
+		t.Errorf("%s changed from %q to %q", AddonImagePullSecretsEnvVar, pullSecretsBefore, got)
+	}
+}
+
+func TestAgentNamespaceHasOCMAddonLabel(t *testing.T) {
+	const installNamespace = "custom-agent"
+	agentAddon, err := addonfactory.NewAgentAddonFactory(AddonName, FS, "manifests/templates").
+		WithAgentInstallNamespace(func(*addonapiv1alpha1.ManagedClusterAddOn) (string, error) {
+			return installNamespace, nil
+		}).
+		BuildTemplateAgentAddon()
+	if err != nil {
+		t.Fatalf("build template agent addon: %v", err)
+	}
+
+	manifests, err := agentAddon.Manifests(
+		&clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-a"}},
+		&addonapiv1alpha1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: AddonName}},
+	)
+	if err != nil {
+		t.Fatalf("render agent manifests: %v", err)
+	}
+
+	for _, manifest := range manifests {
+		namespace, ok := manifest.(*corev1.Namespace)
+		if !ok || namespace.Name != installNamespace {
+			continue
+		}
+		if got := namespace.Labels["addon.open-cluster-management.io/namespace"]; got != "true" {
+			t.Fatalf("addon namespace label=%q; want %q", got, "true")
+		}
+		return
+	}
+	t.Fatalf("rendered Namespace %q not found", installNamespace)
 }

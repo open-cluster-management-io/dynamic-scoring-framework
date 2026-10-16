@@ -5,4 +5,8 @@ metadata:
   annotations:
     addon.open-cluster-management.io/deletion-orphan: ""
 {{- end }}
+  # OCM's klusterlet operator syncs image pull credentials (open-cluster-management-image-pull-credentials)
+  # and TLS configmap (ocm-tls-profile) into labeled addon namespaces.
+  labels:
+    addon.open-cluster-management.io/namespace: "true"
   name: {{ .AddonInstallNamespace }}
