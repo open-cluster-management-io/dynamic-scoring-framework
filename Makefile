@@ -170,7 +170,7 @@ test-unit-controller:
 
 test-unit-addon:
 	@echo "Running unit tests for addon..."
-	go test ./pkg/dynamic_scoring/... ./pkg/dynamic_scoring_agent/...
+	go test ./cmd/dynamic-scoring/... ./pkg/dynamic_scoring/... ./pkg/dynamic_scoring_agent/...
 .PHONY: test-unit-addon
 
 test-unit: test-unit-controller test-unit-addon

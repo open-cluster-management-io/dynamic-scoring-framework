@@ -52,3 +52,9 @@ spokeSetting:
       name: quay.io/open-cluster-management/dynamic-scoring-addon
       tag: latest
       pullPolicy: IfNotPresent
+    # Default secret names referenced by spoke agent pods; AddOnDeploymentConfig can override them.
+    # The klusterlet syncs the first secret into labeled addon namespaces; DSF copies the second
+    # from the hub when its optional source secret is available.
+    imagePullSecrets:
+      - open-cluster-management-image-pull-credentials
+      - hub-registry-secret

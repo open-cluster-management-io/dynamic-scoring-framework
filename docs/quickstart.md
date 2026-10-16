@@ -45,6 +45,10 @@ helm upgrade --install dynamic-scoring-framework ocm/dynamic-scoring-framework -
 
 ```values.yaml``` can be used to customize the installation. For more details, please see the [values.yaml](./../charts/dynamic-scoring-framework/values.yaml) file.
 
+The chart passes `spokeSetting.agent.image`, `spokeSetting.agent.imagePullSecrets`, and `spokeSetting.namespace` to the hub addon controller as defaults for rendering spoke-agent resources through `DYNAMIC_SCORING_ADDON_IMAGE`, `DYNAMIC_SCORING_ADDON_IMAGE_PULL_SECRETS`, and `DYNAMIC_SCORING_ADDON_NAMESPACE`. The chart still creates `AddOnDeploymentConfig` resources; their per-cluster values override these defaults. By default, `imagePullSecrets` references both `open-cluster-management-image-pull-credentials` (synced by the klusterlet operator into labeled addon namespaces) and `hub-registry-secret` (copied by DSF from the optional hub Secret `open-cluster-management/dynamic-scoring-addon-pull-secret` when available). These are Secret names, not credentials themselves.
+
+For a normal Helm installation, the chart renders this default pull-secret list into both generated `AddOnDeploymentConfig` objects, so no manual ADC edit is needed. The same values are also passed to the addon controller as defaults if an ADC does not provide those variables.
+
 **NOTE**: Dynamic Scoring Framework uses two namespaces. The controllers run in the `open-cluster-management` namespace by default, and the DynamicScoringAgent runs in the `dynamic-scoring` namespace in each managed cluster by default. When installing Dynamic Scoring Framework, make sure to check the namespaces used in the installation and create DynamicScorer and DynamicScoringConfig resources in the same hub namespace as the controllers.
 
 ## Setup Prometheus

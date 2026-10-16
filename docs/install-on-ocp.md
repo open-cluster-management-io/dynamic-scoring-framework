@@ -60,9 +60,28 @@ make deploy-addon IMG_ADDON=$IMG_ADDON
 
 If you push the addon image to the hub cluster's internal registry (e.g. `$HOST/open-cluster-management/dynamic-scoring-addon:latest`), the managed clusters also need credentials to pull it.
 
-As default, this framework copy pull secret named `dynamic-scoring-addon-pull-secret` from namespace `open-cluster-management` on hub cluster to `hub-registry-secret` the agent install namespace (e.g. `dynamic-scoring`).
+The instructions below use the standalone `make deploy-addon` Kustomize manifests, not the Helm chart. The static AddOnDeploymentConfigs reference `hub-registry-secret` by default, so select the Secret name that matches the credential source you use.
 
-### 1) Create pull secret on Hub cluster
+The agent pod's `ImagePullSecrets` must reference a Secret in its install namespace. Choose either the OCM-provided pull credentials or the DSF-specific hub-secret copy below.
+
+### Option 1: Reuse credentials supplied to `clusteradm join`
+
+If each managed cluster was joined with `clusteradm join --image-pull-credential-file=/path/to/docker-config.json`, and that Docker config contains credentials for the DSF image registry, OCM creates `open-cluster-management-image-pull-credentials` in the klusterlet operator namespace on the managed cluster. DSF labels its agent namespace with `addon.open-cluster-management.io/namespace: "true"`, so the klusterlet operator copies this Secret into the agent namespace. You do not need to create the DSF-specific hub Secret in Option 2.
+
+Edit both `AddOnDeploymentConfig` objects referenced by the `ClusterManagementAddOn` and set `ImagePullSecrets` to:
+
+```yaml
+- name: ImagePullSecrets
+  value: '["open-cluster-management-image-pull-credentials"]'
+```
+
+The credential file must authorize pulls from the registry where the DSF agent image is stored. If it is missing or empty, the OCM Secret may not contain credentials that can pull a private image.
+
+### Option 2: Copy a DSF-specific pull Secret from the hub
+
+Use this option when the klusterlet credentials are unavailable or do not have access to the DSF image registry. DSF copies `dynamic-scoring-addon-pull-secret` from `open-cluster-management` on the hub to `hub-registry-secret` in the agent install namespace.
+
+#### 1) Create the DSF pull Secret on the hub cluster
 
 Following are the steps to create the pull secret on hub cluster.
 
@@ -89,7 +108,7 @@ oc create secret generic dynamic-scoring-addon-pull-secret \
   --type=kubernetes.io/dockerconfigjson -n open-cluster-management
 ```
 
-### 2) Update `AddOnDeploymentConfig` to use the secret
+#### 2) Update `AddOnDeploymentConfig` to use the DSF pull Secret
 
 Edit both `AddOnDeploymentConfig` objects referenced by `ClusterManagementAddOn`
 (`dynamic-scoring-addon-config` and `dynamic-scoring-addon-config-aarch64` in

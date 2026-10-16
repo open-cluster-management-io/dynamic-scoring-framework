@@ -1,6 +1,7 @@
 package charts
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,13 +9,17 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/yaml"
+
+	"open-cluster-management.io/dynamic-scoring/pkg/dynamic_scoring"
 )
 
 type resource struct {
 	Kind     string
 	Metadata struct{ Name, Namespace string }
 	Spec     map[string]interface{}
+	Raw      string `json:"-"`
 }
 
 func TestAddonChart(t *testing.T) {
@@ -28,18 +33,23 @@ func TestAddonChart(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name, image, hub, spoke string
+		imagePullSecrets        []string
 		values                  []string
 	}{
 		{
 			"defaults", "quay.io/open-cluster-management/dynamic-scoring-addon:latest",
-			"open-cluster-management", "dynamic-scoring", nil,
+			"open-cluster-management", "dynamic-scoring",
+			[]string{"open-cluster-management-image-pull-credentials", "hub-registry-secret"}, nil,
 		},
-		{"custom", "registry.example.com/team/agent:v1.2.3", "custom-hub", "custom-spoke", []string{
-			"--set-string", "spokeSetting.agent.image.name=registry.example.com/team/agent",
-			"--set-string", "spokeSetting.agent.image.tag=v1.2.3",
-			"--set-string", "hubSetting.namespace=custom-hub",
-			"--set-string", "spokeSetting.namespace=custom-spoke",
-		}},
+		{"custom", "registry.example.com/team/agent:v1.2.3", "custom-hub", "custom-spoke",
+			[]string{"private-pull", "mirror-pull"}, []string{
+				"--set-string", "spokeSetting.agent.image.name=registry.example.com/team/agent",
+				"--set-string", "spokeSetting.agent.image.tag=v1.2.3",
+				"--set-string", "hubSetting.namespace=custom-hub",
+				"--set-string", "spokeSetting.namespace=custom-spoke",
+				"--set-string", "spokeSetting.agent.imagePullSecrets[0]=private-pull",
+				"--set-string", "spokeSetting.agent.imagePullSecrets[1]=mirror-pull",
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{"template", "test", chart}, tc.values...)
@@ -48,13 +58,45 @@ func TestAddonChart(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, output)
 			}
 			resources := decodeResources(t, output)
+			imagePullSecretsJSON, err := json.Marshal(tc.imagePullSecrets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			addonController, ok := resources["Deployment/dynamic-scoring-addon-controller"]
+			if !ok {
+				t.Fatal("missing addon-controller Deployment")
+			}
+			var deployment appsv1.Deployment
+			if err := yaml.Unmarshal([]byte(addonController.Raw), &deployment); err != nil {
+				t.Fatal(err)
+			}
+			var env map[string]string
+			for _, container := range deployment.Spec.Template.Spec.Containers {
+				if container.Name != "dynamic-scoring-addon-controller" {
+					continue
+				}
+				env = make(map[string]string, len(container.Env))
+				for _, variable := range container.Env {
+					env[variable.Name] = variable.Value
+				}
+			}
+			for name, want := range map[string]string{
+				dynamic_scoring.AddonImageEnvVar:            tc.image,
+				dynamic_scoring.AddonImagePullSecretsEnvVar: string(imagePullSecretsJSON),
+				dynamic_scoring.AddonInstallNamespaceEnvVar: tc.spoke,
+			} {
+				if got := env[name]; got != want {
+					t.Errorf("%s=%q; want %q", name, got, want)
+				}
+			}
+
 			configSpec := fmt.Sprintf(`agentInstallNamespace: %s
 customizedVariables:
   - name: Image
     value: %s
   - name: ImagePullSecrets
-    value: '["hub-registry-secret"]'
-`, tc.spoke, tc.image)
+    value: '%s'
+`, tc.spoke, tc.image, string(imagePullSecretsJSON))
 			placementSpec := `clusterSets: [global]
 tolerations:
   - key: cluster.open-cluster-management.io/unreachable
@@ -170,6 +212,7 @@ func decodeResources(t *testing.T, output []byte) map[string]resource {
 		if _, exists := resources[key]; exists {
 			t.Fatalf("duplicate resource %s", key)
 		}
+		r.Raw = document
 		resources[key] = r
 	}
 	return resources

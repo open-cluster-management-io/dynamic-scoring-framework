@@ -211,10 +211,8 @@ func (c *addManagerConfig) runController(ctx context.Context, kubeConfig *rest.C
 		utilrand.String(5),
 	)
 
-	// Set agent install namespace from addon deployment config if it exists
-	registrationOption.AgentInstallNamespace = utils.AgentInstallNamespaceFromDeploymentConfigFunc(
-		utils.NewAddOnDeploymentConfigGetter(addonClient),
-	)
+	deploymentConfigGetter := utils.NewAddOnDeploymentConfigGetter(addonClient)
+	agentInstallNamespace := dynamic_scoring.AgentInstallNamespaceFromDeploymentConfigOrEnv(deploymentConfigGetter)
 
 	klog.Info("agent install namespace for AddOn ", dynamic_scoring.AddonName)
 
@@ -228,16 +226,12 @@ func (c *addManagerConfig) runController(ctx context.Context, kubeConfig *rest.C
 			dynamic_scoring.GetDefaultValues,
 			hubPullSecretValuesFunc(kubeClient),
 			addonfactory.GetAddOnDeploymentConfigValues(
-				utils.NewAddOnDeploymentConfigGetter(addonClient),
+				deploymentConfigGetter,
 				normalizeAddOnDeploymentConfigValuesFunc(),
 			),
 		).
 		WithAgentRegistrationOption(registrationOption).
-		WithAgentInstallNamespace(
-			utils.AgentInstallNamespaceFromDeploymentConfigFunc(
-				utils.NewAddOnDeploymentConfigGetter(addonClient),
-			),
-		).
+		WithAgentInstallNamespace(agentInstallNamespace).
 		WithAgentHealthProber(dynamic_scoring.AgentHealthProber()).
 		BuildTemplateAgentAddon()
 	if err != nil {

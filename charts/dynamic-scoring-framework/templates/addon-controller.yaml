@@ -23,6 +23,13 @@ spec:
         args:
           - "/dynamic-scoring-addon"
           - "controller"
+        env:
+          - name: DYNAMIC_SCORING_ADDON_IMAGE
+            value: "{{ .Values.spokeSetting.agent.image.name }}:{{ .Values.spokeSetting.agent.image.tag }}"
+          - name: DYNAMIC_SCORING_ADDON_IMAGE_PULL_SECRETS
+            value: {{ .Values.spokeSetting.agent.imagePullSecrets | toJson | quote }}
+          - name: DYNAMIC_SCORING_ADDON_NAMESPACE
+            value: {{ .Values.spokeSetting.namespace | quote }}
         volumeMounts:
         {{- with .Values.hubSetting.extraVolumeMounts }}
 {{ toYaml . | nindent 10 }}
