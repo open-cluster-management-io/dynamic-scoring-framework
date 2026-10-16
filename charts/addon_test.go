@@ -15,11 +15,14 @@ import (
 	"open-cluster-management.io/dynamic-scoring/pkg/dynamic_scoring"
 )
 
+const addonAPIGroupVersion = "addon.open-cluster-management.io/v1beta1"
+
 type resource struct {
-	Kind     string
-	Metadata struct{ Name, Namespace string }
-	Spec     map[string]interface{}
-	Raw      string `json:"-"`
+	APIVersion string
+	Kind       string
+	Metadata   struct{ Name, Namespace string }
+	Spec       map[string]interface{}
+	Raw        string `json:"-"`
 }
 
 func TestAddonChart(t *testing.T) {
@@ -58,6 +61,15 @@ func TestAddonChart(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, output)
 			}
 			resources := decodeResources(t, output)
+			for _, key := range []string{
+				"AddOnDeploymentConfig/dynamic-scoring-addon-config",
+				"AddOnDeploymentConfig/dynamic-scoring-addon-config-aarch64",
+				"ClusterManagementAddOn/dynamic-scoring-framework",
+			} {
+				if got := resources[key].APIVersion; got != addonAPIGroupVersion {
+					t.Errorf("%s apiVersion=%q; want %s", key, got, addonAPIGroupVersion)
+				}
+			}
 			imagePullSecretsJSON, err := json.Marshal(tc.imagePullSecrets)
 			if err != nil {
 				t.Fatal(err)
@@ -157,11 +169,8 @@ placements:
 			if !reflect.DeepEqual(addon.Spec["installStrategy"], want) {
 				t.Errorf("installStrategy=%v; want %v", addon.Spec["installStrategy"], want)
 			}
-			supportedConfigs := []interface{}{map[string]interface{}{
-				"group": "addon.open-cluster-management.io", "resource": "addondeploymentconfigs",
-			}}
-			if !reflect.DeepEqual(addon.Spec["supportedConfigs"], supportedConfigs) {
-				t.Errorf("supportedConfigs=%v; want %v", addon.Spec["supportedConfigs"], supportedConfigs)
+			if _, ok := addon.Spec["defaultConfigs"]; ok {
+				t.Errorf("unexpected defaultConfigs: %v", addon.Spec["defaultConfigs"])
 			}
 		})
 	}
@@ -179,6 +188,9 @@ func TestStaticAddonConfigs(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing AddOnDeploymentConfig/%s", name)
 		}
+		if got := config.APIVersion; got != addonAPIGroupVersion {
+			t.Errorf("%s apiVersion=%q; want %s", name, got, addonAPIGroupVersion)
+		}
 		var image interface{}
 		variables, _ := config.Spec["customizedVariables"].([]interface{})
 		for _, variable := range variables {
@@ -194,6 +206,21 @@ func TestStaticAddonConfigs(t *testing.T) {
 	if configs[0].Metadata.Namespace != configs[1].Metadata.Namespace ||
 		!reflect.DeepEqual(configs[0].Spec, configs[1].Spec) {
 		t.Fatalf("standard and ARM addon configs differ: %v != %v", configs[0], configs[1])
+	}
+
+	clusterManagementAddon, err := os.ReadFile(base + "clustermanagementaddon.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addon, ok := decodeResources(t, clusterManagementAddon)["ClusterManagementAddOn/dynamic-scoring-framework"]
+	if !ok {
+		t.Fatal("missing static ClusterManagementAddOn")
+	}
+	if got := addon.APIVersion; got != addonAPIGroupVersion {
+		t.Errorf("ClusterManagementAddOn apiVersion=%q; want %s", got, addonAPIGroupVersion)
+	}
+	if _, ok := addon.Spec["defaultConfigs"]; ok {
+		t.Errorf("unexpected defaultConfigs: %v", addon.Spec["defaultConfigs"])
 	}
 }
 

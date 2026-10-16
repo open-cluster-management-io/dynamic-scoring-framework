@@ -57,8 +57,8 @@ func init() {
 	utilruntime.Must(dynamicscoringv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 
-	utilruntime.Must(workv1.AddToScheme(scheme))
-	utilruntime.Must(clusterv1.AddToScheme(scheme))
+	utilruntime.Must(workv1.Install(scheme))
+	utilruntime.Must(clusterv1.Install(scheme))
 }
 
 // nolint:gocyclo

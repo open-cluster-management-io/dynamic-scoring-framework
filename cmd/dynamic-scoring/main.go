@@ -26,7 +26,7 @@ import (
 	cmdfactory "open-cluster-management.io/addon-framework/pkg/cmd/factory"
 	"open-cluster-management.io/addon-framework/pkg/utils"
 	"open-cluster-management.io/addon-framework/pkg/version"
-	addonapiv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
+	addonapiv1beta1 "open-cluster-management.io/api/addon/v1beta1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 
 	"open-cluster-management.io/dynamic-scoring/pkg/dynamic_scoring"
@@ -48,7 +48,7 @@ const (
 // Today we support:
 // - ImagePullSecrets: JSON array string (e.g. '["a","b"]') -> []string
 func normalizeAddOnDeploymentConfigValuesFunc() addonfactory.AddOnDeploymentConfigToValuesFunc {
-	return func(config addonapiv1alpha1.AddOnDeploymentConfig) (addonfactory.Values, error) {
+	return func(config addonapiv1beta1.AddOnDeploymentConfig) (addonfactory.Values, error) {
 		values, err := addonfactory.ToAddOnDeploymentConfigValues(config)
 		if err != nil {
 			return nil, err
@@ -79,7 +79,7 @@ func normalizeAddOnDeploymentConfigValuesFunc() addonfactory.AddOnDeploymentConf
 func hubPullSecretValuesFunc(kubeClient kubernetes.Interface) addonfactory.GetValuesFunc {
 	return func(
 		cluster *clusterv1.ManagedCluster,
-		addon *addonapiv1alpha1.ManagedClusterAddOn,
+		addon *addonapiv1beta1.ManagedClusterAddOn,
 	) (addonfactory.Values, error) {
 		secret, err := kubeClient.CoreV1().Secrets(hubPullSecretNamespace).Get(
 			context.TODO(),

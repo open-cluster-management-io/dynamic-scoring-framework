@@ -11,12 +11,12 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	"open-cluster-management.io/addon-framework/pkg/agent"
-	addonapiv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
+	addonapiv1beta1 "open-cluster-management.io/api/addon/v1beta1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 )
 
 func AddonRBAC(kubeConfig *rest.Config) agent.PermissionConfigFunc {
-	return func(cluster *clusterv1.ManagedCluster, addon *addonapiv1alpha1.ManagedClusterAddOn) error {
+	return func(ctx context.Context, cluster *clusterv1.ManagedCluster, addon *addonapiv1beta1.ManagedClusterAddOn) error {
 		kubeclient, err := kubernetes.NewForConfig(kubeConfig)
 		if err != nil {
 			return err
@@ -70,11 +70,11 @@ func AddonRBAC(kubeConfig *rest.Config) agent.PermissionConfigFunc {
 
 		klog.Info("Role and RoleBinding for AddOn ", addon.Name, " on Cluster ", cluster.Name)
 
-		_, err = kubeclient.RbacV1().Roles(cluster.Name).Get(context.TODO(), role.Name, metav1.GetOptions{})
+		_, err = kubeclient.RbacV1().Roles(cluster.Name).Get(ctx, role.Name, metav1.GetOptions{})
 		switch {
 		case errors.IsNotFound(err):
 			klog.Info("Creating Role ", role.Name, " on Cluster ", cluster.Name, err)
-			_, createErr := kubeclient.RbacV1().Roles(cluster.Name).Create(context.TODO(), role, metav1.CreateOptions{})
+			_, createErr := kubeclient.RbacV1().Roles(cluster.Name).Create(ctx, role, metav1.CreateOptions{})
 			if createErr != nil {
 				return createErr
 			}
@@ -83,11 +83,11 @@ func AddonRBAC(kubeConfig *rest.Config) agent.PermissionConfigFunc {
 			return err
 		}
 
-		_, err = kubeclient.RbacV1().RoleBindings(cluster.Name).Get(context.TODO(), binding.Name, metav1.GetOptions{})
+		_, err = kubeclient.RbacV1().RoleBindings(cluster.Name).Get(ctx, binding.Name, metav1.GetOptions{})
 		switch {
 		case errors.IsNotFound(err):
 			_, createErr := kubeclient.RbacV1().RoleBindings(cluster.Name).Create(
-				context.TODO(),
+				ctx,
 				binding,
 				metav1.CreateOptions{},
 			)
