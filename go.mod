@@ -2,19 +2,6 @@ module open-cluster-management.io/dynamic-scoring
 
 go 1.26.0
 
-replace (
-	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc => go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.53.0
-	k8s.io/api => k8s.io/api v0.36.0
-	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.36.0
-	k8s.io/apimachinery => k8s.io/apimachinery v0.36.0
-	k8s.io/apiserver => k8s.io/apiserver v0.36.0
-	k8s.io/client-go => k8s.io/client-go v0.36.0
-	k8s.io/component-base => k8s.io/component-base v0.36.0
-	open-cluster-management.io/addon-framework => open-cluster-management.io/addon-framework v1.4.0
-	open-cluster-management.io/api => open-cluster-management.io/api v1.4.0
-	open-cluster-management.io/sdk-go => open-cluster-management.io/sdk-go v1.4.0
-)
-
 require (
 	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
