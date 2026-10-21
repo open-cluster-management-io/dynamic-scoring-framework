@@ -130,7 +130,7 @@ func TestAgentInstallNamespaceFromDeploymentConfigOrEnv(t *testing.T) {
 			},
 		}
 
-		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(getter)(context.Background(), addon)
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(getter)(t.Context(), addon)
 		if err != nil {
 			t.Fatalf("namespace resolver returned error: %v", err)
 		}
@@ -150,7 +150,7 @@ func TestAgentInstallNamespaceFromDeploymentConfigOrEnv(t *testing.T) {
 			},
 		}
 
-		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(getter)(context.Background(), addon)
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(getter)(t.Context(), addon)
 		if err != nil {
 			t.Fatalf("namespace resolver returned error: %v", err)
 		}
@@ -170,7 +170,7 @@ func TestAgentInstallNamespaceFromDeploymentConfigOrEnv(t *testing.T) {
 			},
 		}
 
-		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(getter)(context.Background(), addon)
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(getter)(t.Context(), addon)
 		if err != nil {
 			t.Fatalf("namespace resolver returned error: %v", err)
 		}
@@ -183,7 +183,7 @@ func TestAgentInstallNamespaceFromDeploymentConfigOrEnv(t *testing.T) {
 		t.Setenv(AddonInstallNamespaceEnvVar, "environment-namespace")
 		addon := &addonapiv1beta1.ManagedClusterAddOn{}
 
-		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(context.Background(), addon)
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(t.Context(), addon)
 		if err != nil {
 			t.Fatalf("namespace resolver returned error: %v", err)
 		}
@@ -196,7 +196,7 @@ func TestAgentInstallNamespaceFromDeploymentConfigOrEnv(t *testing.T) {
 		t.Setenv(AddonInstallNamespaceEnvVar, "open-cluster-management-agent-addon")
 		addon := &addonapiv1beta1.ManagedClusterAddOn{}
 
-		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(context.Background(), addon)
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(t.Context(), addon)
 		if err != nil {
 			t.Fatalf("namespace resolver returned error: %v", err)
 		}
@@ -209,7 +209,7 @@ func TestAgentInstallNamespaceFromDeploymentConfigOrEnv(t *testing.T) {
 		t.Setenv(AddonInstallNamespaceEnvVar, "")
 		addon := &addonapiv1beta1.ManagedClusterAddOn{}
 
-		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(context.Background(), addon)
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(t.Context(), addon)
 		if err != nil {
 			t.Fatalf("namespace resolver returned error: %v", err)
 		}
@@ -222,7 +222,7 @@ func TestAgentInstallNamespaceFromDeploymentConfigOrEnv(t *testing.T) {
 		t.Setenv(AddonInstallNamespaceEnvVar, "  custom-agent  ")
 		addon := &addonapiv1beta1.ManagedClusterAddOn{}
 
-		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(context.Background(), addon)
+		got, err := AgentInstallNamespaceFromDeploymentConfigOrEnv(nil)(t.Context(), addon)
 		if err != nil {
 			t.Fatalf("namespace resolver returned error: %v", err)
 		}
@@ -322,7 +322,7 @@ func TestAgentNamespaceHasOCMAddonLabel(t *testing.T) {
 	}
 
 	manifests, err := agentAddon.Manifests(
-		context.Background(),
+		t.Context(),
 		&clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-a"}},
 		&addonapiv1beta1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: AddonName}},
 	)
