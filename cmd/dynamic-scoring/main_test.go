@@ -6,7 +6,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"open-cluster-management.io/addon-framework/pkg/addonfactory"
-	addonapiv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
+	addonapiv1beta1 "open-cluster-management.io/api/addon/v1beta1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 
 	"open-cluster-management.io/dynamic-scoring/pkg/dynamic_scoring"
@@ -17,15 +17,15 @@ func TestAddOnDeploymentConfigOverridesEnvironmentDefaults(t *testing.T) {
 	t.Setenv(dynamic_scoring.AddonImagePullSecretsEnvVar, `["env-pull-secret"]`)
 
 	cluster := &clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-a"}}
-	addon := &addonapiv1alpha1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "dynamic-scoring"}}
+	addon := &addonapiv1beta1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "dynamic-scoring"}}
 	defaults, err := dynamic_scoring.GetDefaultValues(cluster, addon)
 	if err != nil {
 		t.Fatalf("get environment defaults: %v", err)
 	}
 
-	config := addonapiv1alpha1.AddOnDeploymentConfig{
-		Spec: addonapiv1alpha1.AddOnDeploymentConfigSpec{
-			CustomizedVariables: []addonapiv1alpha1.CustomizedVariable{
+	config := addonapiv1beta1.AddOnDeploymentConfig{
+		Spec: addonapiv1beta1.AddOnDeploymentConfigSpec{
+			CustomizedVariables: []addonapiv1beta1.CustomizedVariable{
 				{Name: "Image", Value: "registry.example.com/config/agent:v1"},
 				{Name: "ImagePullSecrets", Value: `["config-pull-secret"]`},
 			},
@@ -50,15 +50,15 @@ func TestAddOnDeploymentConfigWithoutPullSecretsKeepsEnvironmentDefault(t *testi
 	t.Setenv(dynamic_scoring.AddonImagePullSecretsEnvVar, `["env-pull-secret"]`)
 
 	cluster := &clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-a"}}
-	addon := &addonapiv1alpha1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "dynamic-scoring"}}
+	addon := &addonapiv1beta1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: "dynamic-scoring"}}
 	defaults, err := dynamic_scoring.GetDefaultValues(cluster, addon)
 	if err != nil {
 		t.Fatalf("get environment defaults: %v", err)
 	}
 
-	config := addonapiv1alpha1.AddOnDeploymentConfig{
-		Spec: addonapiv1alpha1.AddOnDeploymentConfigSpec{
-			CustomizedVariables: []addonapiv1alpha1.CustomizedVariable{
+	config := addonapiv1beta1.AddOnDeploymentConfig{
+		Spec: addonapiv1beta1.AddOnDeploymentConfigSpec{
+			CustomizedVariables: []addonapiv1beta1.CustomizedVariable{
 				{Name: "Image", Value: "registry.example.com/config/agent:v1"},
 			},
 		},

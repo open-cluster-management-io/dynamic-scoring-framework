@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +30,7 @@ import (
 
 var _ = Describe("DynamicScorer helpers", func() {
 	Context("syncScoringHealthz", func() {
-		It("marks scorer active on 200", func() {
+		It("marks scorer active on 200", func(ctx SpecContext) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/healthz" {
 					w.WriteHeader(http.StatusOK)
@@ -47,12 +46,12 @@ var _ = Describe("DynamicScorer helpers", func() {
 				},
 			}
 
-			err := syncScoringHealthz(context.Background(), scorer)
+			err := syncScoringHealthz(ctx, scorer)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(scorer.Status.HealthStatus).To(Equal(common.ScorerHealthStatusActive))
 		})
 
-		It("marks scorer inactive on non-200", func() {
+		It("marks scorer inactive on non-200", func(ctx SpecContext) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/healthz" {
 					w.WriteHeader(http.StatusInternalServerError)
@@ -68,14 +67,14 @@ var _ = Describe("DynamicScorer helpers", func() {
 				},
 			}
 
-			err := syncScoringHealthz(context.Background(), scorer)
+			err := syncScoringHealthz(ctx, scorer)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(scorer.Status.HealthStatus).To(Equal(common.ScorerHealthStatusInactive))
 		})
 	})
 
 	Context("syncScoringConfig", func() {
-		It("updates LastSyncedConfig from endpoint", func() {
+		It("updates LastSyncedConfig from endpoint", func(ctx SpecContext) {
 			expected := common.Config{
 				Name:        "sample-score",
 				Description: "sample",
@@ -117,7 +116,7 @@ var _ = Describe("DynamicScorer helpers", func() {
 				},
 			}
 
-			err := syncScoringConfig(context.Background(), scorer)
+			err := syncScoringConfig(ctx, scorer)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(scorer.Status.HealthStatus).To(Equal(common.ScorerHealthStatusActive))
 			Expect(scorer.Status.LastSyncedConfig).NotTo(BeNil())

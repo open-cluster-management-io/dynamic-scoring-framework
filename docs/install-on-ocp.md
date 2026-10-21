@@ -115,7 +115,7 @@ Edit both `AddOnDeploymentConfig` objects referenced by `ClusterManagementAddOn`
 namespace `open-cluster-management`), using the same image and pull secret values.
 
 ```yaml
-apiVersion: addon.open-cluster-management.io/v1alpha1
+apiVersion: addon.open-cluster-management.io/v1beta1
 kind: AddOnDeploymentConfig
 metadata:
 	name: dynamic-scoring-addon-config

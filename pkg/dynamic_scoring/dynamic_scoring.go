@@ -1,6 +1,7 @@
 package dynamic_scoring
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,7 @@ import (
 	"open-cluster-management.io/addon-framework/pkg/addonfactory"
 	"open-cluster-management.io/addon-framework/pkg/agent"
 	"open-cluster-management.io/addon-framework/pkg/utils"
-	addonapiv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
+	addonapiv1beta1 "open-cluster-management.io/api/addon/v1beta1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	"open-cluster-management.io/dynamic-scoring/pkg/rbac"
 )
@@ -35,14 +36,14 @@ var FS embed.FS
 
 func NewRegistrationOption(kubeConfig *rest.Config, addonName, agentName string) *agent.RegistrationOption {
 	return &agent.RegistrationOption{
-		CSRConfigurations: agent.KubeClientSignerConfigurations(addonName, agentName),
-		CSRApproveCheck:   utils.DefaultCSRApprover(agentName),
-		PermissionConfig:  rbac.AddonRBAC(kubeConfig),
+		Configurations:   agent.KubeClientSignerConfigurations(addonName, agentName),
+		CSRApproveCheck:  utils.DefaultCSRApprover(agentName),
+		PermissionConfig: rbac.AddonRBAC(kubeConfig),
 	}
 }
 
 func GetDefaultValues(cluster *clusterv1.ManagedCluster,
-	addon *addonapiv1alpha1.ManagedClusterAddOn) (addonfactory.Values, error) {
+	addon *addonapiv1beta1.ManagedClusterAddOn) (addonfactory.Values, error) {
 
 	image := os.Getenv(AddonImageEnvVar)
 	if len(image) == 0 {
@@ -92,13 +93,13 @@ func imagePullSecretsFromEnv() ([]string, error) {
 
 // AgentInstallNamespaceFromDeploymentConfigOrEnv resolves the namespace used to install the agent.
 // A non-empty AddOnDeploymentConfig namespace takes precedence over the environment value. The
-// deprecated ManagedClusterAddOn installNamespace field is deliberately ignored.
+// deprecated v1alpha1 ManagedClusterAddOn installNamespace field is deliberately ignored.
 func AgentInstallNamespaceFromDeploymentConfigOrEnv(
 	getter utils.AddOnDeploymentConfigGetter,
-) func(*addonapiv1alpha1.ManagedClusterAddOn) (string, error) {
+) func(context.Context, *addonapiv1beta1.ManagedClusterAddOn) (string, error) {
 	fromDeploymentConfig := utils.AgentInstallNamespaceFromDeploymentConfigFunc(getter)
-	return func(addon *addonapiv1alpha1.ManagedClusterAddOn) (string, error) {
-		namespace, err := fromDeploymentConfig(addon)
+	return func(ctx context.Context, addon *addonapiv1beta1.ManagedClusterAddOn) (string, error) {
+		namespace, err := fromDeploymentConfig(ctx, addon)
 		if err != nil {
 			return "", err
 		}
@@ -106,7 +107,7 @@ func AgentInstallNamespaceFromDeploymentConfigOrEnv(
 			return namespace, nil
 		}
 
-		// If not set in addonDeploymentConfig, checck env var
+		// If not set in addonDeploymentConfig, check the env var
 		// and then fallback to default
 		envNamespace := strings.TrimSpace(os.Getenv(AddonInstallNamespaceEnvVar))
 		if envNamespace != "" {
