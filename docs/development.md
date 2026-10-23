@@ -706,7 +706,9 @@ The optimization workflow consists of:
 
 MWRS allows distributing workloads across multiple clusters based on placement decisions.
 
-Edit the ClusterManager to enable the feature:
+MWRS is still an Alpha feature, but the latest `clusteradm init` enables it by default, so no configuration is needed.
+
+If you install the hub with an older `clusteradm`, or without `clusteradm`, edit the ClusterManager to enable the feature:
 
 ```yaml
 kind: ClusterManager
