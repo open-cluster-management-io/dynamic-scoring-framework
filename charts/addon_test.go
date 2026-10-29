@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 
 	"open-cluster-management.io/dynamic-scoring/pkg/dynamic_scoring"
@@ -61,13 +62,16 @@ func TestAddonChart(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, output)
 			}
 			resources := decodeResources(t, output)
-			for _, key := range []string{
-				"AddOnDeploymentConfig/dynamic-scoring-addon-config",
-				"AddOnDeploymentConfig/dynamic-scoring-addon-config-aarch64",
-				"ClusterManagementAddOn/dynamic-scoring-framework",
-			} {
-				if got := resources[key].APIVersion; got != addonAPIGroupVersion {
-					t.Errorf("%s apiVersion=%q; want %s", key, got, addonAPIGroupVersion)
+			addon, ok := resources["ClusterManagementAddOn/dynamic-scoring-framework"]
+			if !ok {
+				t.Fatal("missing ClusterManagementAddOn")
+			}
+			if got := addon.APIVersion; got != addonAPIGroupVersion {
+				t.Errorf("ClusterManagementAddOn apiVersion=%q; want %s", got, addonAPIGroupVersion)
+			}
+			for key := range resources {
+				if strings.HasPrefix(key, "AddOnDeploymentConfig/") {
+					t.Errorf("unexpected generated %s", key)
 				}
 			}
 			imagePullSecretsJSON, err := json.Marshal(tc.imagePullSecrets)
@@ -102,32 +106,15 @@ func TestAddonChart(t *testing.T) {
 				}
 			}
 
-			configSpec := fmt.Sprintf(`agentInstallNamespace: %s
-customizedVariables:
-  - name: Image
-    value: %s
-  - name: ImagePullSecrets
-    value: '%s'
-`, tc.spoke, tc.image, string(imagePullSecretsJSON))
 			placementSpec := `clusterSets: [global]
 tolerations:
   - key: cluster.open-cluster-management.io/unreachable
     operator: Equal
   - key: cluster.open-cluster-management.io/unavailable
     operator: Equal
-predicates:
-  - requiredClusterSelector:
-      labelSelector:
-        matchExpressions:
-          - key: cluster-arch
-            operator: %s
-            values: [aarch64]
 `
 			for key, spec := range map[string]string{
-				"AddOnDeploymentConfig/dynamic-scoring-addon-config":         configSpec,
-				"AddOnDeploymentConfig/dynamic-scoring-addon-config-aarch64": configSpec,
-				"Placement/dynamic-scoring-placement":                        fmt.Sprintf(placementSpec, "NotIn"),
-				"Placement/dynamic-scoring-placement-aarch64":                fmt.Sprintf(placementSpec, "In"),
+				"Placement/dynamic-scoring-placement": placementSpec,
 			} {
 				got, ok := resources[key]
 				if !ok {
@@ -142,27 +129,11 @@ predicates:
 						key, got.Metadata.Namespace, got.Spec, tc.hub, want)
 				}
 			}
-			addon, ok := resources["ClusterManagementAddOn/dynamic-scoring-framework"]
-			if !ok {
-				t.Fatal("missing ClusterManagementAddOn")
-			}
 			var want map[string]interface{}
 			if err := yaml.Unmarshal([]byte(fmt.Sprintf(`type: Placements
 placements:
   - name: dynamic-scoring-placement
     namespace: %[1]s
-    configs:
-      - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: dynamic-scoring-addon-config
-        namespace: %[1]s
-  - name: dynamic-scoring-placement-aarch64
-    namespace: %[1]s
-    configs:
-      - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: dynamic-scoring-addon-config-aarch64
-        namespace: %[1]s
 `, tc.hub)), &want); err != nil {
 				t.Fatal(err)
 			}
@@ -176,43 +147,47 @@ placements:
 	}
 }
 
-func TestStaticAddonConfigs(t *testing.T) {
-	const base = "../deploy/addon/dynamic-scoring/resources/"
-	configs := make([]resource, 0, 2)
-	for _, name := range []string{"dynamic-scoring-addon-config", "dynamic-scoring-addon-config-aarch64"} {
-		output, err := os.ReadFile(base + strings.ReplaceAll(name, "-", "_") + ".yaml")
-		if err != nil {
-			t.Fatal(err)
-		}
-		config, ok := decodeResources(t, output)["AddOnDeploymentConfig/"+name]
-		if !ok {
-			t.Fatalf("missing AddOnDeploymentConfig/%s", name)
-		}
-		if got := config.APIVersion; got != addonAPIGroupVersion {
-			t.Errorf("%s apiVersion=%q; want %s", name, got, addonAPIGroupVersion)
-		}
-		var image interface{}
-		variables, _ := config.Spec["customizedVariables"].([]interface{})
-		for _, variable := range variables {
-			if v, ok := variable.(map[string]interface{}); ok && v["name"] == "Image" {
-				image = v["value"]
-			}
-		}
-		if want := "quay.io/open-cluster-management/dynamic-scoring-addon:latest"; image != want {
-			t.Errorf("%s: Image=%v; want %q", name, image, want)
-		}
-		configs = append(configs, config)
+func TestStaticAddonManifests(t *testing.T) {
+	output, err := exec.Command("kustomize", "build", "../deploy/addon/dynamic-scoring").CombinedOutput()
+	if err != nil {
+		t.Fatalf("kustomize build: %v\n%s", err, output)
 	}
-	if configs[0].Metadata.Namespace != configs[1].Metadata.Namespace ||
-		!reflect.DeepEqual(configs[0].Spec, configs[1].Spec) {
-		t.Fatalf("standard and ARM addon configs differ: %v != %v", configs[0], configs[1])
+	resources := decodeResources(t, output)
+	for key := range resources {
+		if strings.HasPrefix(key, "AddOnDeploymentConfig/") || strings.Contains(key, "aarch64") {
+			t.Errorf("unexpected generated architecture-specific or AddOnDeploymentConfig resource %s", key)
+		}
 	}
 
-	clusterManagementAddon, err := os.ReadFile(base + "clustermanagementaddon.yaml")
-	if err != nil {
+	controller, ok := resources["Deployment/dynamic-scoring-addon-controller"]
+	if !ok {
+		t.Fatal("missing static addon-controller Deployment")
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal([]byte(controller.Raw), &deployment); err != nil {
 		t.Fatal(err)
 	}
-	addon, ok := decodeResources(t, clusterManagementAddon)["ClusterManagementAddOn/dynamic-scoring-framework"]
+	var env map[string]string
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		if container.Name != "dynamic-scoring-addon-controller" {
+			continue
+		}
+		env = make(map[string]string, len(container.Env))
+		for _, variable := range container.Env {
+			env[variable.Name] = variable.Value
+		}
+	}
+	for name, want := range map[string]string{
+		dynamic_scoring.AddonImageEnvVar:            "quay.io/open-cluster-management/dynamic-scoring-addon:latest",
+		dynamic_scoring.AddonImagePullSecretsEnvVar: `["open-cluster-management-image-pull-credentials","hub-registry-secret"]`,
+		dynamic_scoring.AddonInstallNamespaceEnvVar: "dynamic-scoring",
+	} {
+		if got := env[name]; got != want {
+			t.Errorf("%s=%q; want %q", name, got, want)
+		}
+	}
+
+	addon, ok := resources["ClusterManagementAddOn/dynamic-scoring-framework"]
 	if !ok {
 		t.Fatal("missing static ClusterManagementAddOn")
 	}
@@ -222,6 +197,53 @@ func TestStaticAddonConfigs(t *testing.T) {
 	if _, ok := addon.Spec["defaultConfigs"]; ok {
 		t.Errorf("unexpected defaultConfigs: %v", addon.Spec["defaultConfigs"])
 	}
+	strategy, ok := addon.Spec["installStrategy"].(map[string]interface{})
+	if !ok {
+		t.Fatal("missing ClusterManagementAddOn installStrategy")
+	}
+	placements, ok := strategy["placements"].([]interface{})
+	if !ok || len(placements) != 1 {
+		t.Fatalf("installStrategy placements=%v; want exactly one", strategy["placements"])
+	}
+	placement, ok := placements[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected placement value %T", placements[0])
+	}
+	if _, ok := placement["configs"]; ok {
+		t.Errorf("unexpected AddOnDeploymentConfig references in placement: %v", placement["configs"])
+	}
+	if _, ok := resources["Placement/global"]; !ok {
+		t.Fatal("missing architecture-neutral Placement/global")
+	}
+	role, ok := resources["ClusterRole/dynamic-scoring-addon"]
+	if !ok {
+		t.Fatal("missing ClusterRole with AddOnDeploymentConfig read permissions")
+	}
+	var clusterRole rbacv1.ClusterRole
+	if err := yaml.Unmarshal([]byte(role.Raw), &clusterRole); err != nil {
+		t.Fatal(err)
+	}
+	hasConfigReadPermissions := false
+	for _, rule := range clusterRole.Rules {
+		if contains(rule.APIGroups, addonAPIGroupVersion[:strings.LastIndex(addonAPIGroupVersion, "/")]) &&
+			contains(rule.Resources, "addondeploymentconfigs") &&
+			contains(rule.Verbs, "get") && contains(rule.Verbs, "list") && contains(rule.Verbs, "watch") {
+			hasConfigReadPermissions = true
+			break
+		}
+	}
+	if !hasConfigReadPermissions {
+		t.Error("ClusterRole does not grant get/list/watch on AddOnDeploymentConfigs")
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeResources(t *testing.T, output []byte) map[string]resource {

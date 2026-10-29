@@ -22,3 +22,10 @@ spec:
         args:
           - "/dynamic-scoring-addon"
           - "controller"
+        env:
+          - name: DYNAMIC_SCORING_ADDON_IMAGE
+            value: $(IMG_ADDON)
+          - name: DYNAMIC_SCORING_ADDON_IMAGE_PULL_SECRETS
+            value: '["open-cluster-management-image-pull-credentials","hub-registry-secret"]'
+          - name: DYNAMIC_SCORING_ADDON_NAMESPACE
+            value: dynamic-scoring
