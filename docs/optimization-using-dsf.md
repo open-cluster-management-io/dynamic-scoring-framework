@@ -26,7 +26,9 @@ clusteradm addon enable --names config-policy-controller --clusters cluster2 --c
 
 ### MWRS Installation
 
-ManifestWorkReplicaSet (MWRS) is a feature that allows distributing workloads across multiple clusters based on placement decisions. It can be enabled in the ClusterManager configuration.
+ManifestWorkReplicaSet (MWRS) is a feature that allows distributing workloads across multiple clusters based on placement decisions. MWRS is an Alpha feature, but the latest `clusteradm init` enables it by default, so no configuration is needed.
+
+If you install the hub with `clusteradm` version 1.4.x and lower, enable it in the ClusterManager configuration:
 
 ```yaml
 kind: ClusterManager
