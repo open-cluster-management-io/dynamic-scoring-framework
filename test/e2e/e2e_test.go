@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -73,6 +74,9 @@ var _ = Describe("Dynamic Scoring Framework chart", Ordered, func() {
 			{"get", "managedclusters"},
 			{"get", "managedclusteraddons", "--all-namespaces"},
 			{"get", "manifestworks", "--all-namespaces"},
+			{"get", "dynamicscorers", "--all-namespaces"},
+			{"get", "dynamicscoringconfigs", "--all-namespaces"},
+			{"get", "addonplacementscores", "--all-namespaces"},
 			{"get", "events", "--all-namespaces", "--sort-by=.lastTimestamp"},
 		} {
 			output, err := utils.Run(exec.Command("kubectl", args...))
@@ -127,6 +131,78 @@ var _ = Describe("Dynamic Scoring Framework chart", Ordered, func() {
 		))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(configs)).To(BeEmpty())
+	})
+
+	It("sends a score from a mock scorer without Prometheus", func() {
+		By("deploying a static HTTP scorer in the loopback cluster")
+		response := `{"results":[{"metric":{},"score":42}]}`
+		_, err := utils.Run(exec.Command(
+			"kubectl", "create", "deployment", "dsf-e2e-scorer",
+			"--namespace", addonNamespace, "--image", e2eMockScorerImage(),
+			"--", "/http-echo", "-listen=:8080", "-text="+response,
+		))
+		Expect(err).NotTo(HaveOccurred(), "mock scorer Deployment should be created")
+		_, err = utils.Run(exec.Command(
+			"kubectl", "expose", "deployment", "dsf-e2e-scorer", "--namespace", addonNamespace,
+			"--name", "dsf-e2e-scorer", "--port=8080", "--target-port=8080",
+		))
+		Expect(err).NotTo(HaveOccurred(), "mock scorer Service should be created")
+		_, err = utils.Run(exec.Command(
+			"kubectl", "rollout", "status", "deployment/dsf-e2e-scorer",
+			"--namespace", addonNamespace, "--timeout=5m",
+		))
+		Expect(err).NotTo(HaveOccurred(), "mock scorer should become ready")
+
+		By("registering a scorer with no source data and an AddOnPlacementScore destination")
+		manifest := fmt.Sprintf(`apiVersion: dynamic-scoring.open-cluster-management.io/v1alpha1
+kind: DynamicScoringConfig
+metadata:
+  name: dynamic-scoring-config
+  namespace: %s
+spec:
+  masks: []
+---
+apiVersion: dynamic-scoring.open-cluster-management.io/v1alpha1
+kind: DynamicScorer
+metadata:
+  name: e2e-static-scorer
+  namespace: %s
+spec:
+  description: Static scorer used by the e2e test
+  configURL: http://dsf-e2e-scorer.%s.svc.cluster.local:8080/config
+  configSyncMode: None
+  location: Internal
+  scoreDestination: AddOnPlacementScore
+  scoreDimensionFormat: "${scoreName}"
+  source:
+    type: None
+  scoring:
+    host: http://dsf-e2e-scorer.%s.svc.cluster.local:8080
+    path: /scoring
+    params:
+      name: e2e-static-score
+      interval: 2
+`, hubNamespace, hubNamespace, addonNamespace, addonNamespace)
+		apply := exec.Command("kubectl", "apply", "-f", "-")
+		apply.Stdin = strings.NewReader(manifest)
+		_, err = utils.Run(apply)
+		Expect(err).NotTo(HaveOccurred(), "DynamicScorer should be applied")
+
+		By("waiting for the hub to mark the scorer active")
+		Eventually(func() string {
+			return kubectlJSONPath(
+				"get", "dynamicscorer", "e2e-static-scorer", "--namespace", hubNamespace,
+				"-o", "jsonpath={.status.healthStatus}",
+			)
+		}).WithTimeout(3 * time.Minute).WithPolling(2 * time.Second).Should(Equal("Active"))
+
+		By("waiting for the static score to reach the managed cluster")
+		Eventually(func() string {
+			return kubectlJSONPath(
+				"get", "addonplacementscores", "e2e-static-score", "--namespace", loopbackClusterName,
+				"-o", "jsonpath={.status.scores[0].value}",
+			)
+		}).WithTimeout(3 * time.Minute).WithPolling(2 * time.Second).Should(Equal("42"))
 	})
 })
 
@@ -288,6 +364,21 @@ func e2eAddonImage() string {
 		return image
 	}
 	return "quay.io/open-cluster-management/dynamic-scoring-addon:e2e"
+}
+
+func e2eMockScorerImage() string {
+	if image := os.Getenv("E2E_MOCK_SCORER_IMAGE"); image != "" {
+		return image
+	}
+	return "hashicorp/http-echo:1.0"
+}
+
+func kubectlJSONPath(args ...string) string {
+	output, err := exec.Command("kubectl", args...).CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func e2eOCMBundleVersion() string {

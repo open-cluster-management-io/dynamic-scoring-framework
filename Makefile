@@ -101,6 +101,7 @@ HELM_VERSION ?= v3.11.2
 CLUSTERADM_VERSION ?= v1.4.0
 E2E_OCM_BUNDLE_VERSION ?= v1.4.0
 E2E_NODE_IMAGE ?= kindest/node:$(KUBERNETES_VERSION)
+E2E_MOCK_SCORER_IMAGE ?= hashicorp/http-echo:1.0
 
 KIND_CLUSTER ?= dynamic-scoring-framework-test-e2e
 E2E_CONTROLLER_IMAGE ?= quay.io/open-cluster-management/dynamic-scoring-controller:e2e
@@ -109,9 +110,9 @@ E2E_KUBECONFIG ?= $(LOCALBIN)/kubeconfig-$(KIND_CLUSTER)
 
 .PHONY: print-e2e-tool-versions
 print-e2e-tool-versions: ## Print pinned e2e tool and cluster versions for CI.
-	@printf 'kind_version=%s\nkubectl_version=%s\nkubernetes_version=%s\nnode_image=%s\nhelm_version=%s\nclusteradm_version=%s\nocm_bundle_version=%s\n' \
+	@printf 'kind_version=%s\nkubectl_version=%s\nkubernetes_version=%s\nnode_image=%s\nhelm_version=%s\nclusteradm_version=%s\nocm_bundle_version=%s\nmock_scorer_image=%s\n' \
 		"$(KIND_VERSION)" "$(KUBECTL_VERSION)" "$(KUBERNETES_VERSION)" "$(E2E_NODE_IMAGE)" \
-		"$(HELM_VERSION)" "$(CLUSTERADM_VERSION)" "$(E2E_OCM_BUNDLE_VERSION)"
+		"$(HELM_VERSION)" "$(CLUSTERADM_VERSION)" "$(E2E_OCM_BUNDLE_VERSION)" "$(E2E_MOCK_SCORER_IMAGE)"
 
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet clusteradm ## Deploy the chart and verify the add-on agent on a Kind managed cluster.
@@ -140,10 +141,12 @@ test-e2e: manifests generate fmt vet clusteradm ## Deploy the chart and verify t
 	trap cleanup EXIT; \
 	$(KIND_ENV) $(KIND) create cluster --name "$(KIND_CLUSTER)" --image "$(E2E_NODE_IMAGE)" --kubeconfig "$(E2E_KUBECONFIG)"; \
 	created=true; \
-	KUBECONFIG="$(abspath $(E2E_KUBECONFIG))" $(KIND_ENV) $(KIND) load docker-image "$(E2E_CONTROLLER_IMAGE)" "$(E2E_ADDON_IMAGE)" --name "$(KIND_CLUSTER)"; \
+	KUBECONFIG="$(abspath $(E2E_KUBECONFIG))" $(KIND_ENV) $(KIND) load docker-image \
+	  "$(E2E_CONTROLLER_IMAGE)" "$(E2E_ADDON_IMAGE)" --name "$(KIND_CLUSTER)"; \
 	PATH="$(abspath $(LOCALBIN)):$$PATH" KUBECONFIG="$(abspath $(E2E_KUBECONFIG))" DSF_E2E=true \
 	  KIND_CLUSTER="$(KIND_CLUSTER)" E2E_CONTROLLER_IMAGE="$(E2E_CONTROLLER_IMAGE)" \
 	  E2E_ADDON_IMAGE="$(E2E_ADDON_IMAGE)" E2E_OCM_BUNDLE_VERSION="$(E2E_OCM_BUNDLE_VERSION)" \
+	  E2E_MOCK_SCORER_IMAGE="$(E2E_MOCK_SCORER_IMAGE)" \
 	  E2E_CHART_PATH="$(abspath $(CHART_PATH))" HELM="$(HELM)" \
 	  go test ./test/e2e/ -count=1 -v -ginkgo.v
 
