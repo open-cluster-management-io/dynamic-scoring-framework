@@ -19,60 +19,30 @@ package e2e
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"open-cluster-management.io/dynamic-scoring/test/utils"
 )
 
-var (
-	// Optional Environment Variables:
-	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
-	// These variables are useful if CertManager is already installed, avoiding
-	// re-installation and conflicts.
-	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
-	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
-	isCertManagerAlreadyInstalled = false
-
-	// projectImage is the name of the image which will be build and loaded
-	// with the code source changes to be tested.
-	// TODO: avoid using a fixed hardcoded image
-	projectImage = "quay.io/open-cluster-management/dynamic-scoring-controller:e2e"
-)
-
-// TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
-// temporary environment to validate project changes with the purposed to be used in CI jobs.
-// The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
-// CertManager.
+// TestE2E runs the chart installation and managed-cluster add-on e2e suite in a temporary Kind cluster.
 func TestE2E(t *testing.T) {
+	if os.Getenv("DSF_E2E") != "true" {
+		t.Skip("e2e tests require the isolated environment created by make test-e2e")
+	}
+	kindCluster := os.Getenv("KIND_CLUSTER")
+	if kindCluster == "" || os.Getenv("KUBECONFIG") == "" {
+		t.Fatal("make test-e2e must set KIND_CLUSTER and KUBECONFIG")
+	}
+	output, err := exec.Command("kubectl", "config", "current-context").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read current kube context: %v\n%s", err, output)
+	}
+	if got, want := strings.TrimSpace(string(output)), fmt.Sprintf("kind-%s", kindCluster); got != want {
+		t.Fatalf("e2e context = %q; want isolated Kind context %q", got, want)
+	}
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting dynamic-scoring-framework integration test suite\n")
 	RunSpecs(t, "e2e suite")
 }
-
-var _ = BeforeSuite(func() {
-	// The tests-e2e are intended to run on a temporary cluster that is created and destroyed for testing.
-	// To prevent errors when tests run in environments with CertManager already installed,
-	// we check for its presence before execution.
-	// Setup CertManager before the suite if not skipped and if not already installed
-	if !skipCertManagerInstall {
-		By("checking if cert manager is installed already")
-		isCertManagerAlreadyInstalled = utils.IsCertManagerCRDsInstalled()
-		if !isCertManagerAlreadyInstalled {
-			_, _ = fmt.Fprintf(GinkgoWriter, "Installing CertManager...\n")
-			Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
-		} else {
-			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
-		}
-	}
-})
-
-var _ = AfterSuite(func() {
-	// Teardown CertManager after the suite if not skipped and if it was not already installed
-	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
-		utils.UninstallCertManager()
-	}
-})

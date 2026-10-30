@@ -92,35 +92,63 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
-# The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
-# CertManager is installed by default; skip with:
-# - CERT_MANAGER_INSTALL_SKIP=true
+# The e2e test bootstraps an OCM hub and registers the same Kind cluster as a loopback managed cluster.
+# Keep e2e tool and cluster versions here; CI reads them through print-e2e-tool-versions.
+KIND_VERSION ?= v0.30.0
+KUBECTL_VERSION ?= v1.33.1
+KUBERNETES_VERSION ?= v1.33.1
+HELM_VERSION ?= v3.11.2
+CLUSTERADM_VERSION ?= v1.4.0
+E2E_OCM_BUNDLE_VERSION ?= v1.4.0
+E2E_NODE_IMAGE ?= kindest/node:$(KUBERNETES_VERSION)
+E2E_MOCK_SCORER_IMAGE ?= hashicorp/http-echo:1.0
+
 KIND_CLUSTER ?= dynamic-scoring-framework-test-e2e
 E2E_CONTROLLER_IMAGE ?= quay.io/open-cluster-management/dynamic-scoring-controller:e2e
+E2E_ADDON_IMAGE ?= quay.io/open-cluster-management/dynamic-scoring-addon:e2e
+E2E_KUBECONFIG ?= $(LOCALBIN)/kubeconfig-$(KIND_CLUSTER)
 
-.PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
-	@if $(KIND_ENV) $(KIND) get clusters | grep -qx "$(KIND_CLUSTER)"; then \
-		echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping create."; \
-	else \
-		$(KIND_ENV) $(KIND) create cluster --name $(KIND_CLUSTER); \
-	fi
-	$(CONTAINER_TOOL) build -t $(E2E_CONTROLLER_IMAGE) --build-arg GO_VERSION=$(GO_VERSION) -f Dockerfile .
-	$(KIND_ENV) $(KIND) load docker-image $(E2E_CONTROLLER_IMAGE) --name $(KIND_CLUSTER)
+.PHONY: print-e2e-tool-versions
+print-e2e-tool-versions: ## Print pinned e2e tool and cluster versions for CI.
+	@printf 'kind_version=%s\nkubectl_version=%s\nkubernetes_version=%s\nnode_image=%s\nhelm_version=%s\nclusteradm_version=%s\nocm_bundle_version=%s\nmock_scorer_image=%s\n' \
+		"$(KIND_VERSION)" "$(KUBECTL_VERSION)" "$(KUBERNETES_VERSION)" "$(E2E_NODE_IMAGE)" \
+		"$(HELM_VERSION)" "$(CLUSTERADM_VERSION)" "$(E2E_OCM_BUNDLE_VERSION)" "$(E2E_MOCK_SCORER_IMAGE)"
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	$(KIND_ENV) KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
-
-.PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND_ENV) $(KIND) delete cluster --name $(KIND_CLUSTER)
+test-e2e: manifests generate fmt vet clusteradm ## Deploy the chart and verify the add-on agent on a Kind managed cluster.
+	@set -euo pipefail; \
+	if $(KIND_ENV) $(KIND) get clusters | grep -qx "$(KIND_CLUSTER)"; then \
+		echo "Kind cluster '$(KIND_CLUSTER)' already exists; refusing to reuse or delete it." >&2; \
+		exit 1; \
+	fi; \
+	if [ -e "$(E2E_KUBECONFIG)" ]; then \
+		echo "Kubeconfig '$(E2E_KUBECONFIG)' already exists; refusing to overwrite it." >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p "$(LOCALBIN)"; \
+	$(CONTAINER_TOOL) build $(IMAGE_BUILD_EXTRA_FLAGS) --build-arg GO_VERSION=$(GO_VERSION) -t "$(E2E_CONTROLLER_IMAGE)" -f Dockerfile .; \
+	$(CONTAINER_TOOL) build $(IMAGE_BUILD_EXTRA_FLAGS) --build-arg GO_VERSION=$(GO_VERSION) -t "$(E2E_ADDON_IMAGE)" -f Dockerfile.addon .; \
+	created=false; \
+	cleanup() { \
+		exit_code=$$?; \
+		trap - EXIT; \
+		if [ "$$created" = true ]; then \
+			KUBECONFIG="$(abspath $(E2E_KUBECONFIG))" $(KIND_ENV) $(KIND) delete cluster --name "$(KIND_CLUSTER)" || true; \
+			rm -f "$(E2E_KUBECONFIG)"; \
+		fi; \
+		exit $$exit_code; \
+	}; \
+	trap cleanup EXIT; \
+	$(KIND_ENV) $(KIND) create cluster --name "$(KIND_CLUSTER)" --image "$(E2E_NODE_IMAGE)" --kubeconfig "$(E2E_KUBECONFIG)"; \
+	created=true; \
+	KUBECONFIG="$(abspath $(E2E_KUBECONFIG))" $(KIND_ENV) $(KIND) load docker-image \
+	  "$(E2E_CONTROLLER_IMAGE)" "$(E2E_ADDON_IMAGE)" --name "$(KIND_CLUSTER)"; \
+	PATH="$(abspath $(LOCALBIN)):$$PATH" KUBECONFIG="$(abspath $(E2E_KUBECONFIG))" DSF_E2E=true \
+	  KIND_CLUSTER="$(KIND_CLUSTER)" E2E_CONTROLLER_IMAGE="$(E2E_CONTROLLER_IMAGE)" \
+	  E2E_ADDON_IMAGE="$(E2E_ADDON_IMAGE)" E2E_OCM_BUNDLE_VERSION="$(E2E_OCM_BUNDLE_VERSION)" \
+	  E2E_MOCK_SCORER_IMAGE="$(E2E_MOCK_SCORER_IMAGE)" \
+	  E2E_CHART_PATH="$(abspath $(CHART_PATH))" HELM="$(HELM)" \
+	  go test ./test/e2e/ -count=1 -v -ginkgo.v
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -301,6 +329,7 @@ HELM ?= helm
 CHART_PATH ?= charts/dynamic-scoring-framework
 KUBECTL ?= kubectl
 KIND ?= kind
+CLUSTERADM ?= $(LOCALBIN)/clusteradm
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
@@ -324,6 +353,11 @@ $(KUSTOMIZE): $(LOCALBIN)
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)
 	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_TOOLS_VERSION))
+
+.PHONY: clusteradm
+clusteradm: $(CLUSTERADM) ## Install clusteradm for the OCM e2e environment.
+$(CLUSTERADM): $(LOCALBIN)
+	$(call go-install-tool,$(CLUSTERADM),open-cluster-management.io/clusteradm/cmd/clusteradm,$(CLUSTERADM_VERSION))
 
 .PHONY: setup-envtest
 setup-envtest: envtest ## Download the binaries required for ENVTEST in the local bin directory.

@@ -1,5 +1,6 @@
 hubSetting:
-  # Additional pod volumes applied to all hub controller Deployments.
+  # Additional pod volumes applied to all hub controller Deployments. The addon controller
+  # reserves the volume name "tmp" for writable temporary storage.
   # Example:
   # extraVolumes:
   #   - name: scoring-config
@@ -10,7 +11,8 @@ hubSetting:
   #       secretName: scoring-secret
   extraVolumes: []
 
-  # Additional volume mounts applied to all hub controller containers.
+  # Additional volume mounts applied to all hub controller containers. The addon controller
+  # reserves /tmp for writable temporary storage.
   # Example:
   # extraVolumeMounts:
   #   - name: scoring-config
@@ -24,9 +26,25 @@ hubSetting:
   # Namespace where the hub components (e.g. controllers) will be deployed
   namespace: open-cluster-management
 
-  # Whether to skip creating ClusterSetBinding
-  # When set to false, ClusterSetBinding for "global" ClusterSet will be created
+  # Secret names used to pull images for both hub controller pods.
+  imagePullSecrets: []
+
+  # Kubernetes scheduling controls for both hub controller pods.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Optional proxy settings mapped to HTTP_PROXY, HTTPS_PROXY, and NO_PROXY
+  # in both hub controller containers.
+  proxy:
+    httpProxy: ""
+    httpsProxy: ""
+    noProxy: ""
+
+  # Skip creating the binding only when the global ClusterSet is bound to this namespace elsewhere.
   skipClusterSetBinding: false
+  # Skip the chart Placement only when the CMA uses an externally managed Placement.
+  skipPlacement: false
 
   # The setting for Custom Resource Controller
   resourceController:
@@ -52,7 +70,7 @@ spokeSetting:
       name: quay.io/open-cluster-management/dynamic-scoring-addon
       tag: latest
       pullPolicy: IfNotPresent
-    # Default secret names referenced by spoke agent pods; AddOnDeploymentConfig can override them.
+    # Default secret names referenced by spoke agent pods; user-created AddOnDeploymentConfigs can override them.
     # The klusterlet syncs the first secret into labeled addon namespaces; DSF copies the second
     # from the hub when its optional source secret is available.
     imagePullSecrets:

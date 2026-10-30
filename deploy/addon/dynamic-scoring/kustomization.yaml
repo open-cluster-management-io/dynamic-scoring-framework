@@ -6,10 +6,6 @@ resources:
 - resources/service_account.yaml
 - resources/managed_clusterset_binding.yaml
 - resources/placement.yaml
-- resources/placement_aarch64.yaml
-- resources/addon_deployment_config.yaml
-- resources/dynamic_scoring_addon_config.yaml
-- resources/dynamic_scoring_addon_config_aarch64.yaml
 - resources/clustermanagementaddon.yaml
 - resources/controller.yaml
 
