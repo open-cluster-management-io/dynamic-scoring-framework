@@ -391,7 +391,10 @@ spec:
           allowPrivilegeEscalation: false
           capabilities:
             drop:
-            - ALL
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
         volumeMounts:
         {{- with .Values.hubSetting.extraVolumeMounts }}
 {{ toYaml . | nindent 10 }}
@@ -402,6 +405,9 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
       serviceAccountName: dynamic-scoring-framework-controller
       terminationGracePeriodSeconds: 10
       volumes:

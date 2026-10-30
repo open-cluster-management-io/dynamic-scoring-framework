@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 
@@ -53,6 +54,10 @@ func TestAddonChart(t *testing.T) {
 				"--set-string", "spokeSetting.namespace=custom-spoke",
 				"--set-string", "spokeSetting.agent.imagePullSecrets[0]=private-pull",
 				"--set-string", "spokeSetting.agent.imagePullSecrets[1]=mirror-pull",
+				"--set", "hubSetting.extraVolumes[0].name=custom-volume",
+				"--set-string", "hubSetting.extraVolumes[0].emptyDir.medium=Memory",
+				"--set", "hubSetting.extraVolumeMounts[0].name=custom-volume",
+				"--set", "hubSetting.extraVolumeMounts[0].mountPath=/custom",
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +90,10 @@ func TestAddonChart(t *testing.T) {
 			var deployment appsv1.Deployment
 			if err := yaml.Unmarshal([]byte(addonController.Raw), &deployment); err != nil {
 				t.Fatal(err)
+			}
+			assertHubControllerSecurity(t, deployment, "dynamic-scoring-addon-controller", true)
+			if tc.name == "custom" {
+				assertExtraVolumeAndMount(t, deployment, "custom-volume", "/custom")
 			}
 			var env map[string]string
 			for _, container := range deployment.Spec.Template.Spec.Containers {
@@ -143,6 +152,17 @@ placements:
 			if _, ok := addon.Spec["defaultConfigs"]; ok {
 				t.Errorf("unexpected defaultConfigs: %v", addon.Spec["defaultConfigs"])
 			}
+			controller, ok := resources["Deployment/dynamic-scoring-framework-controller"]
+			if !ok {
+				t.Fatal("missing resource-controller Deployment")
+			}
+			if err := yaml.Unmarshal([]byte(controller.Raw), &deployment); err != nil {
+				t.Fatal(err)
+			}
+			assertHubControllerSecurity(t, deployment, "manager", false)
+			if tc.name == "custom" {
+				assertExtraVolumeAndMount(t, deployment, "custom-volume", "/custom")
+			}
 		})
 	}
 }
@@ -167,6 +187,7 @@ func TestStaticAddonManifests(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(controller.Raw), &deployment); err != nil {
 		t.Fatal(err)
 	}
+	assertHubControllerSecurity(t, deployment, "dynamic-scoring-addon-controller", true)
 	var env map[string]string
 	for _, container := range deployment.Spec.Template.Spec.Containers {
 		if container.Name != "dynamic-scoring-addon-controller" {
@@ -234,6 +255,123 @@ func TestStaticAddonManifests(t *testing.T) {
 	}
 	if !hasConfigReadPermissions {
 		t.Error("ClusterRole does not grant get/list/watch on AddOnDeploymentConfigs")
+	}
+}
+
+func TestStaticControllerManifests(t *testing.T) {
+	output, err := exec.Command("kustomize", "build", "../config/default").CombinedOutput()
+	if err != nil {
+		t.Fatalf("kustomize build: %v\n%s", err, output)
+	}
+	resources := decodeResources(t, output)
+	controller, ok := resources["Deployment/dynamic-scoring-controller-manager"]
+	if !ok {
+		t.Fatal("missing static resource-controller Deployment")
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal([]byte(controller.Raw), &deployment); err != nil {
+		t.Fatal(err)
+	}
+	assertHubControllerSecurity(t, deployment, "manager", false)
+}
+
+func assertHubControllerSecurity(t *testing.T, deployment appsv1.Deployment, containerName string, writableTmp bool) {
+	t.Helper()
+	pod := deployment.Spec.Template.Spec
+	if pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot {
+		t.Errorf("%s pod must run as non-root", deployment.Name)
+	}
+	if pod.SecurityContext == nil || pod.SecurityContext.SeccompProfile == nil ||
+		pod.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("%s pod must use RuntimeDefault seccomp", deployment.Name)
+	}
+	if pod.HostIPC || pod.HostNetwork || pod.HostPID {
+		t.Errorf("%s pod must not share host namespaces", deployment.Name)
+	}
+
+	var container *corev1.Container
+	for i := range pod.Containers {
+		if pod.Containers[i].Name == containerName {
+			container = &pod.Containers[i]
+			break
+		}
+	}
+	if container == nil {
+		t.Fatalf("%s Deployment missing container %q", deployment.Name, containerName)
+	}
+	sc := container.SecurityContext
+	if sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Errorf("%s container must disallow privilege escalation", containerName)
+	}
+	if sc == nil || sc.Privileged == nil || *sc.Privileged {
+		t.Errorf("%s container must not be privileged", containerName)
+	}
+	if sc == nil || sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Errorf("%s container must use a read-only root filesystem", containerName)
+	}
+	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Errorf("%s container must run as non-root", containerName)
+	}
+	dropsAllCapabilities := false
+	if sc != nil && sc.Capabilities != nil {
+		for _, capability := range sc.Capabilities.Drop {
+			if capability == corev1.Capability("ALL") {
+				dropsAllCapabilities = true
+				break
+			}
+		}
+	}
+	if !dropsAllCapabilities {
+		t.Errorf("%s container must drop all capabilities", containerName)
+	}
+	if !writableTmp {
+		return
+	}
+	mountedTmp := false
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == "tmp" && mount.MountPath == "/tmp" {
+			mountedTmp = true
+			break
+		}
+	}
+	if !mountedTmp {
+		t.Errorf("%s container must mount writable /tmp", containerName)
+	}
+	hasTmpVolume := false
+	for _, volume := range pod.Volumes {
+		if volume.Name == "tmp" && volume.EmptyDir != nil {
+			hasTmpVolume = true
+			break
+		}
+	}
+	if !hasTmpVolume {
+		t.Errorf("%s pod must provide /tmp with an emptyDir volume", deployment.Name)
+	}
+}
+
+func assertExtraVolumeAndMount(t *testing.T, deployment appsv1.Deployment, volumeName, mountPath string) {
+	t.Helper()
+	hasVolume := false
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == volumeName && volume.EmptyDir != nil {
+			hasVolume = true
+			break
+		}
+	}
+	if !hasVolume {
+		t.Errorf("%s Deployment missing extra volume %q", deployment.Name, volumeName)
+	}
+	hasMount := false
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		for _, mount := range container.VolumeMounts {
+			if mount.Name == volumeName && mount.MountPath == mountPath {
+				hasMount = true
+				break
+			}
+		}
+	}
+	if !hasMount {
+		t.Errorf("%s Deployment missing mount %q for extra volume %q", deployment.Name, mountPath, volumeName)
 	}
 }
 

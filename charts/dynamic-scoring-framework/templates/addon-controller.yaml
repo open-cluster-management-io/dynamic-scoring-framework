@@ -30,18 +30,33 @@ spec:
             value: {{ .Values.spokeSetting.agent.imagePullSecrets | toJson | quote }}
           - name: DYNAMIC_SCORING_ADDON_NAMESPACE
             value: {{ .Values.spokeSetting.namespace | quote }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
         volumeMounts:
-        {{- with .Values.hubSetting.extraVolumeMounts }}
+          - mountPath: /tmp
+            name: tmp
+{{- with .Values.hubSetting.extraVolumeMounts }}
 {{ toYaml . | nindent 10 }}
-        {{- else }}
-          []
-        {{- end }}
+{{- end }}
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       volumes:
-      {{- with .Values.hubSetting.extraVolumes }}
+        - name: tmp
+          emptyDir: {}
+{{- with .Values.hubSetting.extraVolumes }}
 {{ toYaml . | nindent 8 }}
-      {{- else }}
-        []
-      {{- end }}
+{{- end }}
 ---
 apiVersion: v1
 kind: ServiceAccount

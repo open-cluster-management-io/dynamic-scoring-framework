@@ -1,5 +1,6 @@
 hubSetting:
-  # Additional pod volumes applied to all hub controller Deployments.
+  # Additional pod volumes applied to all hub controller Deployments. The addon controller
+  # reserves the volume name "tmp" for writable temporary storage.
   # Example:
   # extraVolumes:
   #   - name: scoring-config
@@ -10,7 +11,8 @@ hubSetting:
   #       secretName: scoring-secret
   extraVolumes: []
 
-  # Additional volume mounts applied to all hub controller containers.
+  # Additional volume mounts applied to all hub controller containers. The addon controller
+  # reserves /tmp for writable temporary storage.
   # Example:
   # extraVolumeMounts:
   #   - name: scoring-config

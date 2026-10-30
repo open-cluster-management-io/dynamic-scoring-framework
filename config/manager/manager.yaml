@@ -57,6 +57,9 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
       containers:
       - command:
         - /manager
@@ -71,7 +74,10 @@ spec:
           allowPrivilegeEscalation: false
           capabilities:
             drop:
-            - "ALL"
+              - "ALL"
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
         livenessProbe:
           httpGet:
             path: /healthz
