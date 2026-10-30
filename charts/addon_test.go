@@ -17,7 +17,17 @@ import (
 	"open-cluster-management.io/dynamic-scoring/pkg/dynamic_scoring"
 )
 
-const addonAPIGroupVersion = "addon.open-cluster-management.io/v1beta1"
+const (
+	addonAPIGroupVersion             = "addon.open-cluster-management.io/v1beta1"
+	customChartCaseName              = "custom"
+	defaultAgentImagePullSecretsJSON = `["open-cluster-management-image-pull-credentials","hub-registry-secret"]`
+	customAffinityWeightArg          = "hubSetting.affinity.podAntiAffinity." +
+		"preferredDuringSchedulingIgnoredDuringExecution[0].weight=100"
+	customAffinityTopologyArg = "hubSetting.affinity.podAntiAffinity." +
+		"preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.topologyKey=kubernetes.io/hostname"
+	customAffinitySelectorArg = "hubSetting.affinity.podAntiAffinity." +
+		"preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.labelSelector.matchLabels.app=dsf"
+)
 
 type resource struct {
 	APIVersion string
@@ -46,7 +56,7 @@ func TestAddonChart(t *testing.T) {
 			"open-cluster-management", "dynamic-scoring",
 			[]string{"open-cluster-management-image-pull-credentials", "hub-registry-secret"}, nil,
 		},
-		{"custom", "registry.example.com/team/agent:v1.2.3", "custom-hub", "custom-spoke",
+		{customChartCaseName, "registry.example.com/team/agent:v1.2.3", "custom-hub", "custom-spoke",
 			[]string{"private-pull", "mirror-pull"}, []string{
 				"--set-string", "spokeSetting.agent.image.name=registry.example.com/team/agent",
 				"--set-string", "spokeSetting.agent.image.tag=v1.2.3",
@@ -64,9 +74,9 @@ func TestAddonChart(t *testing.T) {
 				"--set-string", "hubSetting.tolerations[0].operator=Equal",
 				"--set-string", "hubSetting.tolerations[0].value=dsf",
 				"--set-string", "hubSetting.tolerations[0].effect=NoSchedule",
-				"--set", "hubSetting.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight=100",
-				"--set-string", "hubSetting.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.topologyKey=kubernetes.io/hostname",
-				"--set-string", "hubSetting.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.labelSelector.matchLabels.app=dsf",
+				"--set", customAffinityWeightArg,
+				"--set-string", customAffinityTopologyArg,
+				"--set-string", customAffinitySelectorArg,
 				"--set-string", "hubSetting.proxy.httpProxy=http://proxy.example.test:8080",
 				"--set-string", "hubSetting.proxy.httpsProxy=https://proxy.example.test:8443",
 				"--set-string", "hubSetting.proxy.noProxy=localhost",
@@ -104,10 +114,10 @@ func TestAddonChart(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertHubControllerSecurity(t, deployment, "dynamic-scoring-addon-controller", true)
-			if tc.name == "custom" {
+			if tc.name == customChartCaseName {
 				assertExtraVolumeAndMount(t, deployment, "custom-volume", "/custom")
 			}
-			assertHubPodSettings(t, deployment, tc.name == "custom")
+			assertHubPodSettings(t, deployment, tc.name == customChartCaseName)
 			var env map[string]string
 			for _, container := range deployment.Spec.Template.Spec.Containers {
 				if container.Name != "dynamic-scoring-addon-controller" {
@@ -173,10 +183,10 @@ placements:
 				t.Fatal(err)
 			}
 			assertHubControllerSecurity(t, deployment, "manager", false)
-			if tc.name == "custom" {
+			if tc.name == customChartCaseName {
 				assertExtraVolumeAndMount(t, deployment, "custom-volume", "/custom")
 			}
-			assertHubPodSettings(t, deployment, tc.name == "custom")
+			assertHubPodSettings(t, deployment, tc.name == customChartCaseName)
 		})
 	}
 }
@@ -252,7 +262,7 @@ func TestStaticAddonManifests(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		dynamic_scoring.AddonImageEnvVar:            "quay.io/open-cluster-management/dynamic-scoring-addon:latest",
-		dynamic_scoring.AddonImagePullSecretsEnvVar: `["open-cluster-management-image-pull-credentials","hub-registry-secret"]`,
+		dynamic_scoring.AddonImagePullSecretsEnvVar: defaultAgentImagePullSecretsJSON,
 		dynamic_scoring.AddonInstallNamespaceEnvVar: "dynamic-scoring",
 	} {
 		if got := env[name]; got != want {
@@ -327,6 +337,7 @@ func TestStaticControllerManifests(t *testing.T) {
 	assertHubControllerSecurity(t, deployment, "manager", false)
 }
 
+//nolint:gocyclo // Keep security assertions together so failures identify the violated invariant.
 func assertHubControllerSecurity(t *testing.T, deployment appsv1.Deployment, containerName string, writableTmp bool) {
 	t.Helper()
 	pod := deployment.Spec.Template.Spec
