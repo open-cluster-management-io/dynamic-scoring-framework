@@ -73,6 +73,10 @@ A total coverage is shown when running `make test`. For the time being, the `cmd
 
 ## E2E tests
 
-- The project use `make test-e2e` to run e2e tests, this will deploy kind cluster and run a set of tests for clusteradm commands. A prerequisite is that Docker is already running.
-- We have a [README](/test/e2e/README.md) indicating the way to write e2e tests.
-- The `make test-e2e` is part of the PR acceptance and it is launched using git-actions.
+- Run `make test-e2e` to exercise the DSF Helm installation and managed-cluster add-on lifecycle. It creates an isolated Kind cluster, bootstraps OCM with `clusteradm`, registers the hub as a loopback managed cluster, installs the chart using locally built images, and verifies that the add-on agent becomes available without an AddOnDeploymentConfig.
+- The test currently does not create a `DynamicScorer` or require Prometheus; it covers installation and agent startup only.
+- Docker and Kind must be available. The target installs the pinned `clusteradm` CLI and cleans up only the Kind cluster and kubeconfig it created. It refuses to reuse an existing cluster with the configured name.
+- E2E tool and cluster versions are centralized in the Makefile; the GitHub Actions workflow reads them with `make print-e2e-tool-versions`.
+- `go test ./...` skips the cluster-mutating e2e suite; use `make test-e2e` to opt in with an isolated kubeconfig.
+- E2E scenarios are written with Ginkgo/Gomega under `test/e2e/`.
+- `make test-e2e` runs in the GitHub Actions presubmit.
