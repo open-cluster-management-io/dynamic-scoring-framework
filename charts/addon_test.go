@@ -58,6 +58,18 @@ func TestAddonChart(t *testing.T) {
 				"--set-string", "hubSetting.extraVolumes[0].emptyDir.medium=Memory",
 				"--set", "hubSetting.extraVolumeMounts[0].name=custom-volume",
 				"--set", "hubSetting.extraVolumeMounts[0].mountPath=/custom",
+				"--set-string", "hubSetting.imagePullSecrets[0]=hub-pull",
+				"--set-string", "hubSetting.nodeSelector.pool=hub",
+				"--set-string", "hubSetting.tolerations[0].key=dedicated",
+				"--set-string", "hubSetting.tolerations[0].operator=Equal",
+				"--set-string", "hubSetting.tolerations[0].value=dsf",
+				"--set-string", "hubSetting.tolerations[0].effect=NoSchedule",
+				"--set", "hubSetting.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight=100",
+				"--set-string", "hubSetting.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.topologyKey=kubernetes.io/hostname",
+				"--set-string", "hubSetting.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.labelSelector.matchLabels.app=dsf",
+				"--set-string", "hubSetting.proxy.httpProxy=http://proxy.example.test:8080",
+				"--set-string", "hubSetting.proxy.httpsProxy=https://proxy.example.test:8443",
+				"--set-string", "hubSetting.proxy.noProxy=localhost",
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +107,7 @@ func TestAddonChart(t *testing.T) {
 			if tc.name == "custom" {
 				assertExtraVolumeAndMount(t, deployment, "custom-volume", "/custom")
 			}
+			assertHubPodSettings(t, deployment, tc.name == "custom")
 			var env map[string]string
 			for _, container := range deployment.Spec.Template.Spec.Containers {
 				if container.Name != "dynamic-scoring-addon-controller" {
@@ -162,6 +175,45 @@ placements:
 			assertHubControllerSecurity(t, deployment, "manager", false)
 			if tc.name == "custom" {
 				assertExtraVolumeAndMount(t, deployment, "custom-volume", "/custom")
+			}
+			assertHubPodSettings(t, deployment, tc.name == "custom")
+		})
+	}
+}
+
+func TestPlacementAndClusterSetBindingSwitches(t *testing.T) {
+	helm := os.Getenv("HELM")
+	if helm == "" {
+		helm = "helm"
+	}
+	chart := os.Getenv("CHART_PATH")
+	if chart == "" {
+		chart = "dynamic-scoring-framework"
+	}
+	for _, tc := range []struct {
+		name          string
+		values        []string
+		wantPlacement bool
+		wantBinding   bool
+	}{
+		{name: "defaults", wantPlacement: true, wantBinding: true},
+		{name: "skip placement only", values: []string{"--set", "hubSetting.skipPlacement=true"}, wantBinding: true},
+		{name: "skip binding only", values: []string{"--set", "hubSetting.skipClusterSetBinding=true"}, wantPlacement: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"template", "test", chart}, tc.values...)
+			output, err := exec.Command(helm, args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, output)
+			}
+			resources := decodeResources(t, output)
+			_, hasPlacement := resources["Placement/dynamic-scoring-placement"]
+			_, hasBinding := resources["ManagedClusterSetBinding/global"]
+			if hasPlacement != tc.wantPlacement {
+				t.Errorf("Placement present=%t; want %t", hasPlacement, tc.wantPlacement)
+			}
+			if hasBinding != tc.wantBinding {
+				t.Errorf("ManagedClusterSetBinding present=%t; want %t", hasBinding, tc.wantBinding)
 			}
 		})
 	}
@@ -372,6 +424,61 @@ func assertExtraVolumeAndMount(t *testing.T, deployment appsv1.Deployment, volum
 	}
 	if !hasMount {
 		t.Errorf("%s Deployment missing mount %q for extra volume %q", deployment.Name, mountPath, volumeName)
+	}
+}
+
+func assertHubPodSettings(t *testing.T, deployment appsv1.Deployment, customized bool) {
+	t.Helper()
+	pod := deployment.Spec.Template.Spec
+	if !customized {
+		if len(pod.ImagePullSecrets) != 0 || len(pod.NodeSelector) != 0 ||
+			len(pod.Tolerations) != 0 || pod.Affinity != nil {
+			t.Errorf("%s unexpectedly renders hub scheduling or image-pull settings", deployment.Name)
+		}
+	} else {
+		if !reflect.DeepEqual(pod.ImagePullSecrets, []corev1.LocalObjectReference{{Name: "hub-pull"}}) {
+			t.Errorf("%s imagePullSecrets=%v; want hub-pull", deployment.Name, pod.ImagePullSecrets)
+		}
+		if !reflect.DeepEqual(pod.NodeSelector, map[string]string{"pool": "hub"}) {
+			t.Errorf("%s nodeSelector=%v; want pool=hub", deployment.Name, pod.NodeSelector)
+		}
+		wantToleration := corev1.Toleration{
+			Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "dsf", Effect: corev1.TaintEffectNoSchedule,
+		}
+		if !reflect.DeepEqual(pod.Tolerations, []corev1.Toleration{wantToleration}) {
+			t.Errorf("%s tolerations=%v; want %v", deployment.Name, pod.Tolerations, wantToleration)
+		}
+		if pod.Affinity == nil || pod.Affinity.PodAntiAffinity == nil ||
+			len(pod.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution) != 1 {
+			t.Errorf("%s affinity=%v; want one preferred pod anti-affinity rule", deployment.Name, pod.Affinity)
+		} else {
+			rule := pod.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution[0]
+			if rule.Weight != 100 || rule.PodAffinityTerm.TopologyKey != "kubernetes.io/hostname" ||
+				rule.PodAffinityTerm.LabelSelector == nil ||
+				rule.PodAffinityTerm.LabelSelector.MatchLabels["app"] != "dsf" {
+				t.Errorf("%s affinity rule=%v; want preferred app=dsf hostname anti-affinity", deployment.Name, rule)
+			}
+		}
+	}
+
+	proxyEnv := map[string]string{}
+	for _, container := range pod.Containers {
+		for _, variable := range container.Env {
+			if variable.Name == "HTTP_PROXY" || variable.Name == "HTTPS_PROXY" || variable.Name == "NO_PROXY" {
+				proxyEnv[variable.Name] = variable.Value
+			}
+		}
+	}
+	wantProxyEnv := map[string]string{}
+	if customized {
+		wantProxyEnv = map[string]string{
+			"HTTP_PROXY":  "http://proxy.example.test:8080",
+			"HTTPS_PROXY": "https://proxy.example.test:8443",
+			"NO_PROXY":    "localhost",
+		}
+	}
+	if !reflect.DeepEqual(proxyEnv, wantProxyEnv) {
+		t.Errorf("%s proxy env=%v; want %v", deployment.Name, proxyEnv, wantProxyEnv)
 	}
 }
 

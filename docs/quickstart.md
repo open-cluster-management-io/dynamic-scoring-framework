@@ -49,6 +49,10 @@ The chart passes `spokeSetting.agent.image`, `spokeSetting.agent.imagePullSecret
 
 To override the environment defaults, create an `AddOnDeploymentConfig` and add its reference under `configs` for the `dynamic-scoring-placement` in the `dynamic-scoring-framework` `ClusterManagementAddOn`.
 
+Hub controller pods have separate chart settings: `hubSetting.imagePullSecrets`, `hubSetting.nodeSelector`, `hubSetting.tolerations`, `hubSetting.affinity`, and `hubSetting.proxy`. These apply to both hub controllers; they do not configure the spoke agent. Spoke scheduling can be set through the add-on framework's `AddOnDeploymentConfig` `nodePlacement` when a user-created config is explicitly referenced by the CMA.
+
+Set `hubSetting.skipPlacement: true` only when the `ClusterManagementAddOn` is configured to use a Placement managed elsewhere. The chart will not create its own Placement in that case.
+
 **NOTE**: Dynamic Scoring Framework uses two namespaces. The controllers run in the `open-cluster-management` namespace by default, and the DynamicScoringAgent runs in the `dynamic-scoring` namespace in each managed cluster by default. When installing Dynamic Scoring Framework, make sure to check the namespaces used in the installation and create DynamicScorer and DynamicScoringConfig resources in the same hub namespace as the controllers.
 
 ## Setup Prometheus

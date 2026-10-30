@@ -7,6 +7,7 @@ metadata:
 spec:
   clusterSet: global
 {{- end }}
+{{- if not .Values.hubSetting.skipPlacement }}
 ---
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
@@ -21,3 +22,4 @@ spec:
     operator: Equal
   - key: cluster.open-cluster-management.io/unavailable
     operator: Equal
+{{- end }}
