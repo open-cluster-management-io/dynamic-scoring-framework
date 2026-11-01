@@ -86,6 +86,33 @@ var _ = Describe("DynamicScoringConfig helpers", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(endpoint).To(Equal("http://score.example.com/api/v1/score"))
 		})
+
+		It("builds source and scoring endpoints from synced config when source and scoring hosts differ", func() {
+			scorer := dynamicscoringv1alpha1.DynamicScorer{
+				Spec: dynamicscoringv1alpha1.DynamicScorerSpec{
+					ConfigURL: "http://config.example.com/config",
+				},
+				Status: dynamicscoringv1alpha1.DynamicScorerStatus{
+					LastSyncedConfig: &common.Config{
+						Source: common.SourceConfig{
+							Host: "http://prometheus.monitoring.svc:9090",
+							Path: "/api/v1/query_range",
+						},
+						Scoring: common.ScoringConfig{
+							Host: "http://scorer-service.scoring.svc:8080",
+							Path: "/api/v1/score",
+						},
+					},
+				},
+			}
+			sourceEndpoint, err := getValidSourceFullEndpoint(scorer)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sourceEndpoint).To(Equal("http://prometheus.monitoring.svc:9090/api/v1/query_range"))
+
+			scoringEndpoint, err := getValidScoringFullEndpoint(scorer)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(scoringEndpoint).To(Equal("http://scorer-service.scoring.svc:8080/api/v1/score"))
+		})
 	})
 
 	Context("dimension format helper", func() {

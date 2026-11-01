@@ -472,7 +472,7 @@ func getValidScoringFullEndpoint(scorer dynamicscoringv1alpha1.DynamicScorer) (s
 
 	var scoringHost, scoringPath string
 	if scorer.Status.LastSyncedConfig != nil && scorer.Status.LastSyncedConfig.Scoring.Host != "" {
-		scoringHost = scorer.Status.LastSyncedConfig.Source.Host
+		scoringHost = scorer.Status.LastSyncedConfig.Scoring.Host
 	} else if scorer.Spec.Scoring.Host != "" {
 		scoringHost = scorer.Spec.Scoring.Host
 	} else {
