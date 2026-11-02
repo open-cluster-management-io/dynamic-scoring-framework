@@ -11,15 +11,3 @@ spec:
     placements:
       - name: dynamic-scoring-placement
         namespace: {{ .Values.hubSetting.namespace }}
-        configs:
-          - group: addon.open-cluster-management.io
-            resource: addondeploymentconfigs
-            name: dynamic-scoring-addon-config
-            namespace: {{ .Values.hubSetting.namespace }}
-      - name: dynamic-scoring-placement-aarch64
-        namespace: {{ .Values.hubSetting.namespace }}
-        configs:
-          - group: addon.open-cluster-management.io
-            resource: addondeploymentconfigs
-            name: dynamic-scoring-addon-config-aarch64
-            namespace: {{ .Values.hubSetting.namespace }}

@@ -364,6 +364,23 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
+{{- with .Values.hubSetting.proxy }}
+{{- if or .httpProxy .httpsProxy .noProxy }}
+        env:
+{{- with .httpProxy }}
+        - name: HTTP_PROXY
+          value: {{ . | quote }}
+{{- end }}
+{{- with .httpsProxy }}
+        - name: HTTPS_PROXY
+          value: {{ . | quote }}
+{{- end }}
+{{- with .noProxy }}
+        - name: NO_PROXY
+          value: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
         image: "{{ .Values.hubSetting.resourceController.image.name }}:{{ .Values.hubSetting.resourceController.image.tag }}"
         imagePullPolicy: {{ .Values.hubSetting.resourceController.image.pullPolicy }}
         livenessProbe:
@@ -391,7 +408,10 @@ spec:
           allowPrivilegeEscalation: false
           capabilities:
             drop:
-            - ALL
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
         volumeMounts:
         {{- with .Values.hubSetting.extraVolumeMounts }}
 {{ toYaml . | nindent 10 }}
@@ -402,11 +422,32 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+{{- with .Values.hubSetting.affinity }}
+      affinity:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.hubSetting.imagePullSecrets }}
+      imagePullSecrets:
+{{- range . }}
+        - name: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- with .Values.hubSetting.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | nindent 8 }}
+{{- end }}
       serviceAccountName: dynamic-scoring-framework-controller
       terminationGracePeriodSeconds: 10
       volumes:
       {{- with .Values.hubSetting.extraVolumes }}
 {{ toYaml . | nindent 8 }}
-      {{- else }}
+{{- else }}
         []
-      {{- end }}
+{{- end }}
+{{- with .Values.hubSetting.tolerations }}
+      tolerations:
+{{ toYaml . | nindent 8 }}
+{{- end }}

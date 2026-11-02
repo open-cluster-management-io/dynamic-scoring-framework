@@ -15,6 +15,13 @@ spec:
         app: dynamic-scoring-addon-controller
     spec:
       serviceAccountName: dynamic-scoring-addon-sa
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: dynamic-scoring-addon-controller
         image: quay.io/open-cluster-management/dynamic-scoring-addon
@@ -22,3 +29,24 @@ spec:
         args:
           - "/dynamic-scoring-addon"
           - "controller"
+        env:
+          - name: DYNAMIC_SCORING_ADDON_IMAGE
+            value: $(IMG_ADDON)
+          - name: DYNAMIC_SCORING_ADDON_IMAGE_PULL_SECRETS
+            value: '["open-cluster-management-image-pull-credentials","hub-registry-secret"]'
+          - name: DYNAMIC_SCORING_ADDON_NAMESPACE
+            value: dynamic-scoring
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+        volumeMounts:
+          - mountPath: /tmp
+            name: tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

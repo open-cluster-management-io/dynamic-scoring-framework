@@ -30,18 +30,65 @@ spec:
             value: {{ .Values.spokeSetting.agent.imagePullSecrets | toJson | quote }}
           - name: DYNAMIC_SCORING_ADDON_NAMESPACE
             value: {{ .Values.spokeSetting.namespace | quote }}
+{{- with .Values.hubSetting.proxy }}
+{{- with .httpProxy }}
+          - name: HTTP_PROXY
+            value: {{ . | quote }}
+{{- end }}
+{{- with .httpsProxy }}
+          - name: HTTPS_PROXY
+            value: {{ . | quote }}
+{{- end }}
+{{- with .noProxy }}
+          - name: NO_PROXY
+            value: {{ . | quote }}
+{{- end }}
+{{- end }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
         volumeMounts:
-        {{- with .Values.hubSetting.extraVolumeMounts }}
+          - mountPath: /tmp
+            name: tmp
+{{- with .Values.hubSetting.extraVolumeMounts }}
 {{ toYaml . | nindent 10 }}
-        {{- else }}
-          []
-        {{- end }}
-      volumes:
-      {{- with .Values.hubSetting.extraVolumes }}
+{{- end }}
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+{{- with .Values.hubSetting.affinity }}
+      affinity:
 {{ toYaml . | nindent 8 }}
-      {{- else }}
-        []
-      {{- end }}
+{{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- with .Values.hubSetting.extraVolumes }}
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.hubSetting.imagePullSecrets }}
+      imagePullSecrets:
+{{- range . }}
+        - name: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- with .Values.hubSetting.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.hubSetting.tolerations }}
+      tolerations:
+{{ toYaml . | nindent 8 }}
+{{- end }}
 ---
 apiVersion: v1
 kind: ServiceAccount

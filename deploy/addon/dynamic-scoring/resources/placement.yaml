@@ -5,11 +5,3 @@ metadata:
 spec:
   clusterSets:
     - global
-  predicates:
-    - requiredClusterSelector:
-        labelSelector:
-          matchExpressions:
-            - key: cluster-arch
-              operator: NotIn
-              values:
-                - aarch64

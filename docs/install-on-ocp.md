@@ -42,11 +42,11 @@ done
 make image-manifest IMG_CONTROLLER="$IMG_CONTROLLER" IMG_ADDON="$IMG_ADDON"
 ```
 
-Both `dynamic-scoring-addon-config` and `dynamic-scoring-addon-config-aarch64`
-must use the same common addon image, without an architecture suffix. Their
-existing Placement selectors and config references remain unchanged. Separate
-ARM addon builds from an external cluster are no longer needed. Sample scoring
-API images, including policy-watcher, are not published by the DSF image workflows.
+The addon image is a multi-architecture manifest, so the same image works on
+amd64 and arm64 managed clusters. DSF uses one architecture-neutral Placement;
+separate ARM addon builds from an external cluster are not needed. Sample
+scoring API images, including policy-watcher, are not published by the DSF image
+workflows.
 
 ## Deploy Dynamic Scoring Framework
 
@@ -60,7 +60,15 @@ make deploy-addon IMG_ADDON=$IMG_ADDON
 
 If you push the addon image to the hub cluster's internal registry (e.g. `$HOST/open-cluster-management/dynamic-scoring-addon:latest`), the managed clusters also need credentials to pull it.
 
-The instructions below use the standalone `make deploy-addon` Kustomize manifests, not the Helm chart. The static AddOnDeploymentConfigs reference `hub-registry-secret` by default, so select the Secret name that matches the credential source you use.
+The instructions below use the standalone `make deploy-addon` Kustomize manifests, not the Helm chart. By default the controller uses both `open-cluster-management-image-pull-credentials` and `hub-registry-secret`; no `AddOnDeploymentConfig` is created or referenced. To override these defaults, create an `AddOnDeploymentConfig` and add a config reference to the `global` placement in the `dynamic-scoring-framework` `ClusterManagementAddOn`:
+
+```yaml
+configs:
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    name: dynamic-scoring-addon-config
+    namespace: open-cluster-management
+```
 
 The agent pod's `ImagePullSecrets` must reference a Secret in its install namespace. Choose either the OCM-provided pull credentials or the DSF-specific hub-secret copy below.
 
@@ -68,11 +76,18 @@ The agent pod's `ImagePullSecrets` must reference a Secret in its install namesp
 
 If each managed cluster was joined with `clusteradm join --image-pull-credential-file=/path/to/docker-config.json`, and that Docker config contains credentials for the DSF image registry, OCM creates `open-cluster-management-image-pull-credentials` in the klusterlet operator namespace on the managed cluster. DSF labels its agent namespace with `addon.open-cluster-management.io/namespace: "true"`, so the klusterlet operator copies this Secret into the agent namespace. You do not need to create the DSF-specific hub Secret in Option 2.
 
-Edit both `AddOnDeploymentConfig` objects referenced by the `ClusterManagementAddOn` and set `ImagePullSecrets` to:
+Create the `AddOnDeploymentConfig` referenced by the CMA with this customized variable:
 
 ```yaml
-- name: ImagePullSecrets
-  value: '["open-cluster-management-image-pull-credentials"]'
+apiVersion: addon.open-cluster-management.io/v1beta1
+kind: AddOnDeploymentConfig
+metadata:
+  name: dynamic-scoring-addon-config
+  namespace: open-cluster-management
+spec:
+  customizedVariables:
+    - name: ImagePullSecrets
+      value: '["open-cluster-management-image-pull-credentials"]'
 ```
 
 The credential file must authorize pulls from the registry where the DSF agent image is stored. If it is missing or empty, the OCM Secret may not contain credentials that can pull a private image.
@@ -108,11 +123,11 @@ oc create secret generic dynamic-scoring-addon-pull-secret \
   --type=kubernetes.io/dockerconfigjson -n open-cluster-management
 ```
 
-#### 2) Update `AddOnDeploymentConfig` to use the DSF pull Secret
+#### 2) Create an `AddOnDeploymentConfig` to use the DSF pull Secret
 
-Edit both `AddOnDeploymentConfig` objects referenced by `ClusterManagementAddOn`
-(`dynamic-scoring-addon-config` and `dynamic-scoring-addon-config-aarch64` in
-namespace `open-cluster-management`), using the same image and pull secret values.
+Create the `AddOnDeploymentConfig` in namespace `open-cluster-management`, using
+the desired image and pull-secret values, and add the config reference shown
+above to the CMA's `global` placement.
 
 ```yaml
 apiVersion: addon.open-cluster-management.io/v1beta1

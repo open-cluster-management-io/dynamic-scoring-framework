@@ -10,12 +10,24 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 
 	"open-cluster-management.io/dynamic-scoring/pkg/dynamic_scoring"
 )
 
-const addonAPIGroupVersion = "addon.open-cluster-management.io/v1beta1"
+const (
+	addonAPIGroupVersion             = "addon.open-cluster-management.io/v1beta1"
+	customChartCaseName              = "custom"
+	defaultAgentImagePullSecretsJSON = `["open-cluster-management-image-pull-credentials","hub-registry-secret"]`
+	customAffinityWeightArg          = "hubSetting.affinity.podAntiAffinity." +
+		"preferredDuringSchedulingIgnoredDuringExecution[0].weight=100"
+	customAffinityTopologyArg = "hubSetting.affinity.podAntiAffinity." +
+		"preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.topologyKey=kubernetes.io/hostname"
+	customAffinitySelectorArg = "hubSetting.affinity.podAntiAffinity." +
+		"preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.labelSelector.matchLabels.app=dsf"
+)
 
 type resource struct {
 	APIVersion string
@@ -44,7 +56,7 @@ func TestAddonChart(t *testing.T) {
 			"open-cluster-management", "dynamic-scoring",
 			[]string{"open-cluster-management-image-pull-credentials", "hub-registry-secret"}, nil,
 		},
-		{"custom", "registry.example.com/team/agent:v1.2.3", "custom-hub", "custom-spoke",
+		{customChartCaseName, "registry.example.com/team/agent:v1.2.3", "custom-hub", "custom-spoke",
 			[]string{"private-pull", "mirror-pull"}, []string{
 				"--set-string", "spokeSetting.agent.image.name=registry.example.com/team/agent",
 				"--set-string", "spokeSetting.agent.image.tag=v1.2.3",
@@ -52,6 +64,22 @@ func TestAddonChart(t *testing.T) {
 				"--set-string", "spokeSetting.namespace=custom-spoke",
 				"--set-string", "spokeSetting.agent.imagePullSecrets[0]=private-pull",
 				"--set-string", "spokeSetting.agent.imagePullSecrets[1]=mirror-pull",
+				"--set", "hubSetting.extraVolumes[0].name=custom-volume",
+				"--set-string", "hubSetting.extraVolumes[0].emptyDir.medium=Memory",
+				"--set", "hubSetting.extraVolumeMounts[0].name=custom-volume",
+				"--set", "hubSetting.extraVolumeMounts[0].mountPath=/custom",
+				"--set-string", "hubSetting.imagePullSecrets[0]=hub-pull",
+				"--set-string", "hubSetting.nodeSelector.pool=hub",
+				"--set-string", "hubSetting.tolerations[0].key=dedicated",
+				"--set-string", "hubSetting.tolerations[0].operator=Equal",
+				"--set-string", "hubSetting.tolerations[0].value=dsf",
+				"--set-string", "hubSetting.tolerations[0].effect=NoSchedule",
+				"--set", customAffinityWeightArg,
+				"--set-string", customAffinityTopologyArg,
+				"--set-string", customAffinitySelectorArg,
+				"--set-string", "hubSetting.proxy.httpProxy=http://proxy.example.test:8080",
+				"--set-string", "hubSetting.proxy.httpsProxy=https://proxy.example.test:8443",
+				"--set-string", "hubSetting.proxy.noProxy=localhost",
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,13 +89,16 @@ func TestAddonChart(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, output)
 			}
 			resources := decodeResources(t, output)
-			for _, key := range []string{
-				"AddOnDeploymentConfig/dynamic-scoring-addon-config",
-				"AddOnDeploymentConfig/dynamic-scoring-addon-config-aarch64",
-				"ClusterManagementAddOn/dynamic-scoring-framework",
-			} {
-				if got := resources[key].APIVersion; got != addonAPIGroupVersion {
-					t.Errorf("%s apiVersion=%q; want %s", key, got, addonAPIGroupVersion)
+			addon, ok := resources["ClusterManagementAddOn/dynamic-scoring-framework"]
+			if !ok {
+				t.Fatal("missing ClusterManagementAddOn")
+			}
+			if got := addon.APIVersion; got != addonAPIGroupVersion {
+				t.Errorf("ClusterManagementAddOn apiVersion=%q; want %s", got, addonAPIGroupVersion)
+			}
+			for key := range resources {
+				if strings.HasPrefix(key, "AddOnDeploymentConfig/") {
+					t.Errorf("unexpected generated %s", key)
 				}
 			}
 			imagePullSecretsJSON, err := json.Marshal(tc.imagePullSecrets)
@@ -82,6 +113,11 @@ func TestAddonChart(t *testing.T) {
 			if err := yaml.Unmarshal([]byte(addonController.Raw), &deployment); err != nil {
 				t.Fatal(err)
 			}
+			assertHubControllerSecurity(t, deployment, "dynamic-scoring-addon-controller", true)
+			if tc.name == customChartCaseName {
+				assertExtraVolumeAndMount(t, deployment, "custom-volume", "/custom")
+			}
+			assertHubPodSettings(t, deployment, tc.name == customChartCaseName)
 			var env map[string]string
 			for _, container := range deployment.Spec.Template.Spec.Containers {
 				if container.Name != "dynamic-scoring-addon-controller" {
@@ -102,32 +138,15 @@ func TestAddonChart(t *testing.T) {
 				}
 			}
 
-			configSpec := fmt.Sprintf(`agentInstallNamespace: %s
-customizedVariables:
-  - name: Image
-    value: %s
-  - name: ImagePullSecrets
-    value: '%s'
-`, tc.spoke, tc.image, string(imagePullSecretsJSON))
 			placementSpec := `clusterSets: [global]
 tolerations:
   - key: cluster.open-cluster-management.io/unreachable
     operator: Equal
   - key: cluster.open-cluster-management.io/unavailable
     operator: Equal
-predicates:
-  - requiredClusterSelector:
-      labelSelector:
-        matchExpressions:
-          - key: cluster-arch
-            operator: %s
-            values: [aarch64]
 `
 			for key, spec := range map[string]string{
-				"AddOnDeploymentConfig/dynamic-scoring-addon-config":         configSpec,
-				"AddOnDeploymentConfig/dynamic-scoring-addon-config-aarch64": configSpec,
-				"Placement/dynamic-scoring-placement":                        fmt.Sprintf(placementSpec, "NotIn"),
-				"Placement/dynamic-scoring-placement-aarch64":                fmt.Sprintf(placementSpec, "In"),
+				"Placement/dynamic-scoring-placement": placementSpec,
 			} {
 				got, ok := resources[key]
 				if !ok {
@@ -142,27 +161,11 @@ predicates:
 						key, got.Metadata.Namespace, got.Spec, tc.hub, want)
 				}
 			}
-			addon, ok := resources["ClusterManagementAddOn/dynamic-scoring-framework"]
-			if !ok {
-				t.Fatal("missing ClusterManagementAddOn")
-			}
 			var want map[string]interface{}
 			if err := yaml.Unmarshal([]byte(fmt.Sprintf(`type: Placements
 placements:
   - name: dynamic-scoring-placement
     namespace: %[1]s
-    configs:
-      - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: dynamic-scoring-addon-config
-        namespace: %[1]s
-  - name: dynamic-scoring-placement-aarch64
-    namespace: %[1]s
-    configs:
-      - group: addon.open-cluster-management.io
-        resource: addondeploymentconfigs
-        name: dynamic-scoring-addon-config-aarch64
-        namespace: %[1]s
 `, tc.hub)), &want); err != nil {
 				t.Fatal(err)
 			}
@@ -172,47 +175,102 @@ placements:
 			if _, ok := addon.Spec["defaultConfigs"]; ok {
 				t.Errorf("unexpected defaultConfigs: %v", addon.Spec["defaultConfigs"])
 			}
+			controller, ok := resources["Deployment/dynamic-scoring-framework-controller"]
+			if !ok {
+				t.Fatal("missing resource-controller Deployment")
+			}
+			if err := yaml.Unmarshal([]byte(controller.Raw), &deployment); err != nil {
+				t.Fatal(err)
+			}
+			assertHubControllerSecurity(t, deployment, "manager", false)
+			if tc.name == customChartCaseName {
+				assertExtraVolumeAndMount(t, deployment, "custom-volume", "/custom")
+			}
+			assertHubPodSettings(t, deployment, tc.name == customChartCaseName)
 		})
 	}
 }
 
-func TestStaticAddonConfigs(t *testing.T) {
-	const base = "../deploy/addon/dynamic-scoring/resources/"
-	configs := make([]resource, 0, 2)
-	for _, name := range []string{"dynamic-scoring-addon-config", "dynamic-scoring-addon-config-aarch64"} {
-		output, err := os.ReadFile(base + strings.ReplaceAll(name, "-", "_") + ".yaml")
-		if err != nil {
-			t.Fatal(err)
-		}
-		config, ok := decodeResources(t, output)["AddOnDeploymentConfig/"+name]
-		if !ok {
-			t.Fatalf("missing AddOnDeploymentConfig/%s", name)
-		}
-		if got := config.APIVersion; got != addonAPIGroupVersion {
-			t.Errorf("%s apiVersion=%q; want %s", name, got, addonAPIGroupVersion)
-		}
-		var image interface{}
-		variables, _ := config.Spec["customizedVariables"].([]interface{})
-		for _, variable := range variables {
-			if v, ok := variable.(map[string]interface{}); ok && v["name"] == "Image" {
-				image = v["value"]
-			}
-		}
-		if want := "quay.io/open-cluster-management/dynamic-scoring-addon:latest"; image != want {
-			t.Errorf("%s: Image=%v; want %q", name, image, want)
-		}
-		configs = append(configs, config)
+func TestPlacementAndClusterSetBindingSwitches(t *testing.T) {
+	helm := os.Getenv("HELM")
+	if helm == "" {
+		helm = "helm"
 	}
-	if configs[0].Metadata.Namespace != configs[1].Metadata.Namespace ||
-		!reflect.DeepEqual(configs[0].Spec, configs[1].Spec) {
-		t.Fatalf("standard and ARM addon configs differ: %v != %v", configs[0], configs[1])
+	chart := os.Getenv("CHART_PATH")
+	if chart == "" {
+		chart = "dynamic-scoring-framework"
+	}
+	for _, tc := range []struct {
+		name          string
+		values        []string
+		wantPlacement bool
+		wantBinding   bool
+	}{
+		{name: "defaults", wantPlacement: true, wantBinding: true},
+		{name: "skip placement only", values: []string{"--set", "hubSetting.skipPlacement=true"}, wantBinding: true},
+		{name: "skip binding only", values: []string{"--set", "hubSetting.skipClusterSetBinding=true"}, wantPlacement: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"template", "test", chart}, tc.values...)
+			output, err := exec.Command(helm, args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, output)
+			}
+			resources := decodeResources(t, output)
+			_, hasPlacement := resources["Placement/dynamic-scoring-placement"]
+			_, hasBinding := resources["ManagedClusterSetBinding/global"]
+			if hasPlacement != tc.wantPlacement {
+				t.Errorf("Placement present=%t; want %t", hasPlacement, tc.wantPlacement)
+			}
+			if hasBinding != tc.wantBinding {
+				t.Errorf("ManagedClusterSetBinding present=%t; want %t", hasBinding, tc.wantBinding)
+			}
+		})
+	}
+}
+
+func TestStaticAddonManifests(t *testing.T) {
+	output, err := exec.Command("kustomize", "build", "../deploy/addon/dynamic-scoring").CombinedOutput()
+	if err != nil {
+		t.Fatalf("kustomize build: %v\n%s", err, output)
+	}
+	resources := decodeResources(t, output)
+	for key := range resources {
+		if strings.HasPrefix(key, "AddOnDeploymentConfig/") || strings.Contains(key, "aarch64") {
+			t.Errorf("unexpected generated architecture-specific or AddOnDeploymentConfig resource %s", key)
+		}
 	}
 
-	clusterManagementAddon, err := os.ReadFile(base + "clustermanagementaddon.yaml")
-	if err != nil {
+	controller, ok := resources["Deployment/dynamic-scoring-addon-controller"]
+	if !ok {
+		t.Fatal("missing static addon-controller Deployment")
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal([]byte(controller.Raw), &deployment); err != nil {
 		t.Fatal(err)
 	}
-	addon, ok := decodeResources(t, clusterManagementAddon)["ClusterManagementAddOn/dynamic-scoring-framework"]
+	assertHubControllerSecurity(t, deployment, "dynamic-scoring-addon-controller", true)
+	var env map[string]string
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		if container.Name != "dynamic-scoring-addon-controller" {
+			continue
+		}
+		env = make(map[string]string, len(container.Env))
+		for _, variable := range container.Env {
+			env[variable.Name] = variable.Value
+		}
+	}
+	for name, want := range map[string]string{
+		dynamic_scoring.AddonImageEnvVar:            "quay.io/open-cluster-management/dynamic-scoring-addon:latest",
+		dynamic_scoring.AddonImagePullSecretsEnvVar: defaultAgentImagePullSecretsJSON,
+		dynamic_scoring.AddonInstallNamespaceEnvVar: "dynamic-scoring",
+	} {
+		if got := env[name]; got != want {
+			t.Errorf("%s=%q; want %q", name, got, want)
+		}
+	}
+
+	addon, ok := resources["ClusterManagementAddOn/dynamic-scoring-framework"]
 	if !ok {
 		t.Fatal("missing static ClusterManagementAddOn")
 	}
@@ -222,6 +280,226 @@ func TestStaticAddonConfigs(t *testing.T) {
 	if _, ok := addon.Spec["defaultConfigs"]; ok {
 		t.Errorf("unexpected defaultConfigs: %v", addon.Spec["defaultConfigs"])
 	}
+	strategy, ok := addon.Spec["installStrategy"].(map[string]interface{})
+	if !ok {
+		t.Fatal("missing ClusterManagementAddOn installStrategy")
+	}
+	placements, ok := strategy["placements"].([]interface{})
+	if !ok || len(placements) != 1 {
+		t.Fatalf("installStrategy placements=%v; want exactly one", strategy["placements"])
+	}
+	placement, ok := placements[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected placement value %T", placements[0])
+	}
+	if _, ok := placement["configs"]; ok {
+		t.Errorf("unexpected AddOnDeploymentConfig references in placement: %v", placement["configs"])
+	}
+	if _, ok := resources["Placement/global"]; !ok {
+		t.Fatal("missing architecture-neutral Placement/global")
+	}
+	role, ok := resources["ClusterRole/dynamic-scoring-addon"]
+	if !ok {
+		t.Fatal("missing ClusterRole with AddOnDeploymentConfig read permissions")
+	}
+	var clusterRole rbacv1.ClusterRole
+	if err := yaml.Unmarshal([]byte(role.Raw), &clusterRole); err != nil {
+		t.Fatal(err)
+	}
+	hasConfigReadPermissions := false
+	for _, rule := range clusterRole.Rules {
+		if contains(rule.APIGroups, addonAPIGroupVersion[:strings.LastIndex(addonAPIGroupVersion, "/")]) &&
+			contains(rule.Resources, "addondeploymentconfigs") &&
+			contains(rule.Verbs, "get") && contains(rule.Verbs, "list") && contains(rule.Verbs, "watch") {
+			hasConfigReadPermissions = true
+			break
+		}
+	}
+	if !hasConfigReadPermissions {
+		t.Error("ClusterRole does not grant get/list/watch on AddOnDeploymentConfigs")
+	}
+}
+
+func TestStaticControllerManifests(t *testing.T) {
+	output, err := exec.Command("kustomize", "build", "../config/default").CombinedOutput()
+	if err != nil {
+		t.Fatalf("kustomize build: %v\n%s", err, output)
+	}
+	resources := decodeResources(t, output)
+	controller, ok := resources["Deployment/dynamic-scoring-controller-manager"]
+	if !ok {
+		t.Fatal("missing static resource-controller Deployment")
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal([]byte(controller.Raw), &deployment); err != nil {
+		t.Fatal(err)
+	}
+	assertHubControllerSecurity(t, deployment, "manager", false)
+}
+
+//nolint:gocyclo // Keep security assertions together so failures identify the violated invariant.
+func assertHubControllerSecurity(t *testing.T, deployment appsv1.Deployment, containerName string, writableTmp bool) {
+	t.Helper()
+	pod := deployment.Spec.Template.Spec
+	if pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot {
+		t.Errorf("%s pod must run as non-root", deployment.Name)
+	}
+	if pod.SecurityContext == nil || pod.SecurityContext.SeccompProfile == nil ||
+		pod.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("%s pod must use RuntimeDefault seccomp", deployment.Name)
+	}
+	if pod.HostIPC || pod.HostNetwork || pod.HostPID {
+		t.Errorf("%s pod must not share host namespaces", deployment.Name)
+	}
+
+	var container *corev1.Container
+	for i := range pod.Containers {
+		if pod.Containers[i].Name == containerName {
+			container = &pod.Containers[i]
+			break
+		}
+	}
+	if container == nil {
+		t.Fatalf("%s Deployment missing container %q", deployment.Name, containerName)
+	}
+	sc := container.SecurityContext
+	if sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Errorf("%s container must disallow privilege escalation", containerName)
+	}
+	if sc == nil || sc.Privileged == nil || *sc.Privileged {
+		t.Errorf("%s container must not be privileged", containerName)
+	}
+	if sc == nil || sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Errorf("%s container must use a read-only root filesystem", containerName)
+	}
+	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Errorf("%s container must run as non-root", containerName)
+	}
+	dropsAllCapabilities := false
+	if sc != nil && sc.Capabilities != nil {
+		for _, capability := range sc.Capabilities.Drop {
+			if capability == corev1.Capability("ALL") {
+				dropsAllCapabilities = true
+				break
+			}
+		}
+	}
+	if !dropsAllCapabilities {
+		t.Errorf("%s container must drop all capabilities", containerName)
+	}
+	if !writableTmp {
+		return
+	}
+	mountedTmp := false
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == "tmp" && mount.MountPath == "/tmp" {
+			mountedTmp = true
+			break
+		}
+	}
+	if !mountedTmp {
+		t.Errorf("%s container must mount writable /tmp", containerName)
+	}
+	hasTmpVolume := false
+	for _, volume := range pod.Volumes {
+		if volume.Name == "tmp" && volume.EmptyDir != nil {
+			hasTmpVolume = true
+			break
+		}
+	}
+	if !hasTmpVolume {
+		t.Errorf("%s pod must provide /tmp with an emptyDir volume", deployment.Name)
+	}
+}
+
+func assertExtraVolumeAndMount(t *testing.T, deployment appsv1.Deployment, volumeName, mountPath string) {
+	t.Helper()
+	hasVolume := false
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == volumeName && volume.EmptyDir != nil {
+			hasVolume = true
+			break
+		}
+	}
+	if !hasVolume {
+		t.Errorf("%s Deployment missing extra volume %q", deployment.Name, volumeName)
+	}
+	hasMount := false
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		for _, mount := range container.VolumeMounts {
+			if mount.Name == volumeName && mount.MountPath == mountPath {
+				hasMount = true
+				break
+			}
+		}
+	}
+	if !hasMount {
+		t.Errorf("%s Deployment missing mount %q for extra volume %q", deployment.Name, mountPath, volumeName)
+	}
+}
+
+func assertHubPodSettings(t *testing.T, deployment appsv1.Deployment, customized bool) {
+	t.Helper()
+	pod := deployment.Spec.Template.Spec
+	if !customized {
+		if len(pod.ImagePullSecrets) != 0 || len(pod.NodeSelector) != 0 ||
+			len(pod.Tolerations) != 0 || pod.Affinity != nil {
+			t.Errorf("%s unexpectedly renders hub scheduling or image-pull settings", deployment.Name)
+		}
+	} else {
+		if !reflect.DeepEqual(pod.ImagePullSecrets, []corev1.LocalObjectReference{{Name: "hub-pull"}}) {
+			t.Errorf("%s imagePullSecrets=%v; want hub-pull", deployment.Name, pod.ImagePullSecrets)
+		}
+		if !reflect.DeepEqual(pod.NodeSelector, map[string]string{"pool": "hub"}) {
+			t.Errorf("%s nodeSelector=%v; want pool=hub", deployment.Name, pod.NodeSelector)
+		}
+		wantToleration := corev1.Toleration{
+			Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "dsf", Effect: corev1.TaintEffectNoSchedule,
+		}
+		if !reflect.DeepEqual(pod.Tolerations, []corev1.Toleration{wantToleration}) {
+			t.Errorf("%s tolerations=%v; want %v", deployment.Name, pod.Tolerations, wantToleration)
+		}
+		if pod.Affinity == nil || pod.Affinity.PodAntiAffinity == nil ||
+			len(pod.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution) != 1 {
+			t.Errorf("%s affinity=%v; want one preferred pod anti-affinity rule", deployment.Name, pod.Affinity)
+		} else {
+			rule := pod.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution[0]
+			if rule.Weight != 100 || rule.PodAffinityTerm.TopologyKey != "kubernetes.io/hostname" ||
+				rule.PodAffinityTerm.LabelSelector == nil ||
+				rule.PodAffinityTerm.LabelSelector.MatchLabels["app"] != "dsf" {
+				t.Errorf("%s affinity rule=%v; want preferred app=dsf hostname anti-affinity", deployment.Name, rule)
+			}
+		}
+	}
+
+	proxyEnv := map[string]string{}
+	for _, container := range pod.Containers {
+		for _, variable := range container.Env {
+			if variable.Name == "HTTP_PROXY" || variable.Name == "HTTPS_PROXY" || variable.Name == "NO_PROXY" {
+				proxyEnv[variable.Name] = variable.Value
+			}
+		}
+	}
+	wantProxyEnv := map[string]string{}
+	if customized {
+		wantProxyEnv = map[string]string{
+			"HTTP_PROXY":  "http://proxy.example.test:8080",
+			"HTTPS_PROXY": "https://proxy.example.test:8443",
+			"NO_PROXY":    "localhost",
+		}
+	}
+	if !reflect.DeepEqual(proxyEnv, wantProxyEnv) {
+		t.Errorf("%s proxy env=%v; want %v", deployment.Name, proxyEnv, wantProxyEnv)
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeResources(t *testing.T, output []byte) map[string]resource {

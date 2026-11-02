@@ -23,10 +23,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Read pinned tool versions
+        id: tool-versions
+        run: make -s print-e2e-tool-versions >> "$GITHUB_OUTPUT"
       - name: Setup Helm
         uses: azure/setup-helm@v5
         with:
-          version: v3.11.2
+          version: ${{ steps.tool-versions.outputs.helm_version }}
       - name: Verify
         run: make verify
 
@@ -89,3 +92,34 @@ jobs:
           version: v3.11.2
       - name: Chart tests
         run: make test-chart
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Read pinned tool versions
+        id: tool-versions
+        run: make -s print-e2e-tool-versions >> "$GITHUB_OUTPUT"
+      - name: Setup Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: ${{ steps.tool-versions.outputs.helm_version }}
+      - name: Install Kind
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: ${{ steps.tool-versions.outputs.kind_version }}
+          kubectl_version: ${{ steps.tool-versions.outputs.kubectl_version }}
+          node_image: ${{ steps.tool-versions.outputs.node_image }}
+          install_only: true
+      - name: E2E tests
+        env:
+          GOTOOLCHAIN: auto
+        run: make test-e2e

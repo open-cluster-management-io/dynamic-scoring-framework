@@ -11,15 +11,3 @@ spec:
     placements:
       - name: global
         namespace: open-cluster-management
-        configs:
-          - group: addon.open-cluster-management.io
-            resource: addondeploymentconfigs
-            name: dynamic-scoring-addon-config
-            namespace: open-cluster-management
-      - name: global-aarch64
-        namespace: open-cluster-management
-        configs:
-          - group: addon.open-cluster-management.io
-            resource: addondeploymentconfigs
-            name: dynamic-scoring-addon-config-aarch64
-            namespace: open-cluster-management
