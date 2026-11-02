@@ -63,6 +63,11 @@ spec:
       containers:
       - command:
         - /manager
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081

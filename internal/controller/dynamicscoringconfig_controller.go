@@ -43,19 +43,25 @@ import (
 // DynamicScoringConfigReconciler reconciles a DynamicScoringConfig object
 type DynamicScoringConfigReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	Namespace string
+	APIReader client.Reader
 }
 
 const dsFinalizer = "dynamic-scoring.open-cluster-management.io/dynamic-scoring-config-finalizer"
 
-// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscoringconfigs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscoringconfigs/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscoringconfigs/finalizers,verbs=update
-// +kubebuilder:rbac:groups=work.open-cluster-management.io,resources=manifestworks,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=work.open-cluster-management.io,resources=manifestworks,verbs=create
+// +kubebuilder:rbac:groups=work.open-cluster-management.io,resources=manifestworks,resourceNames=dynamic-scoring-config-manifestwork,verbs=get;update;delete
+// +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters,verbs=list
+// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscoringconfigs,verbs=get;list;watch;update,namespace=system
+// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscoringconfigs/finalizers,verbs=update,namespace=system
 
 func (r *DynamicScoringConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
+	if req.Namespace != r.Namespace {
+		klog.InfoS("Ignoring DynamicScoringConfig outside controller namespace", "namespace", req.Namespace, "name", req.Name)
+		return ctrl.Result{}, nil
+	}
 
 	klog.Infof("Reconciling DynamicScoringConfig: %s", req.Name)
 
@@ -83,13 +89,13 @@ func (r *DynamicScoringConfigReconciler) Reconcile(ctx context.Context, req ctrl
 	if !config.DeletionTimestamp.IsZero() {
 		klog.InfoS("Deleting ManifestWorks for DynamicScoringConfig", "name", config.Name)
 		var clusters clusterv1.ManagedClusterList
-		if err := r.List(ctx, &clusters); err != nil {
+		if err := r.APIReader.List(ctx, &clusters); err != nil {
 			klog.ErrorS(err, "Failed to list ManagedClusters")
 			return ctrl.Result{}, err
 		}
 
 		for _, cluster := range clusters.Items {
-			err := deleteConfigManifestWork(ctx, r.Client, cluster.Name)
+			err := deleteConfigManifestWork(ctx, r.Client, r.APIReader, cluster.Name)
 			if err != nil {
 				klog.ErrorS(err, "Failed to delete ManifestWork for cluster", "cluster", cluster.Name)
 				// continue deleting for other clusters even if one fails
@@ -109,14 +115,14 @@ func (r *DynamicScoringConfigReconciler) Reconcile(ctx context.Context, req ctrl
 
 	// list all DynamicScorers in the namespace
 	var scorerList dynamicscoringv1alpha1.DynamicScorerList
-	if err := r.List(ctx, &scorerList, client.InNamespace(req.Namespace)); err != nil {
-		klog.ErrorS(err, "Failed to list DynamicScorers", "namespace", req.Namespace)
+	if err := r.List(ctx, &scorerList, client.InNamespace(r.Namespace)); err != nil {
+		klog.ErrorS(err, "Failed to list DynamicScorers", "namespace", r.Namespace)
 		return ctrl.Result{}, err
 	}
 
 	// list all ManagedClusters
 	var clusters clusterv1.ManagedClusterList
-	if err := r.List(ctx, &clusters); err != nil {
+	if err := r.APIReader.List(ctx, &clusters); err != nil {
 		klog.ErrorS(err, "Failed to list ManagedClusters")
 		return ctrl.Result{}, err
 	}
@@ -129,7 +135,7 @@ func (r *DynamicScoringConfigReconciler) Reconcile(ctx context.Context, req ctrl
 	for _, cluster := range clusters.Items {
 		clusterName := cluster.Name
 		currentSummaries := clusterToSummaries[clusterName]
-		err := updateConfigManifestWork(ctx, r.Client, clusterName, currentSummaries)
+		err := updateConfigManifestWork(ctx, r.Client, r.APIReader, clusterName, currentSummaries)
 		if err != nil {
 			klog.ErrorS(err, "Failed to update ManifestWork for cluster", "cluster", clusterName)
 			return ctrl.Result{}, err
@@ -140,12 +146,23 @@ func (r *DynamicScoringConfigReconciler) Reconcile(ctx context.Context, req ctrl
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DynamicScoringConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Namespace == "" {
+		return fmt.Errorf("controller namespace must be set")
+	}
+	if r.APIReader == nil {
+		return fmt.Errorf("uncached API reader must be set")
+	}
+
 	mapFn := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []ctrl.Request {
+			if obj.GetNamespace() != r.Namespace {
+				return nil
+			}
+
 			return []ctrl.Request{
 				{NamespacedName: client.ObjectKey{
 					Name:      common.DynamicScoringConfigName,
-					Namespace: obj.GetNamespace(),
+					Namespace: r.Namespace,
 				}},
 			}
 		})
@@ -358,10 +375,10 @@ func buildConfigManifestWork(clusterName string, scorerSummaryList []common.Scor
 	return manifest
 }
 
-func updateConfigManifestWork(ctx context.Context, c client.Client, clusterName string, currentSummaries []common.ScorerSummary) error {
+func updateConfigManifestWork(ctx context.Context, c client.Client, reader client.Reader, clusterName string, currentSummaries []common.ScorerSummary) error {
 	manifest := buildConfigManifestWork(clusterName, currentSummaries)
 	var existing workv1.ManifestWork
-	err := c.Get(ctx, client.ObjectKeyFromObject(&manifest), &existing)
+	err := reader.Get(ctx, client.ObjectKeyFromObject(&manifest), &existing)
 	if errors.IsNotFound(err) {
 		if err := c.Create(ctx, &manifest); err != nil {
 			klog.ErrorS(err, "Failed to create ManifestWork", "name", manifest.Name, "namespace", manifest.Namespace)
@@ -401,9 +418,9 @@ func updateConfigManifestWork(ctx context.Context, c client.Client, clusterName 
 	return nil
 }
 
-func deleteConfigManifestWork(ctx context.Context, c client.Client, clusterName string) error {
+func deleteConfigManifestWork(ctx context.Context, c client.Client, reader client.Reader, clusterName string) error {
 	var existing workv1.ManifestWork
-	err := c.Get(ctx, client.ObjectKey{
+	err := reader.Get(ctx, client.ObjectKey{
 		Name:      common.ManifestWorkConfigMapName,
 		Namespace: clusterName,
 	}, &existing)

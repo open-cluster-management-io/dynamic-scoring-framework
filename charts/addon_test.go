@@ -37,6 +37,7 @@ type resource struct {
 	Raw        string `json:"-"`
 }
 
+//nolint:gocyclo // Keep the chart assertions together for readability.
 func TestAddonChart(t *testing.T) {
 	helm := os.Getenv("HELM")
 	if helm == "" {
@@ -183,6 +184,82 @@ placements:
 				t.Fatal(err)
 			}
 			assertHubControllerSecurity(t, deployment, "manager", false)
+			var namespaceEnvFound bool
+			for _, container := range deployment.Spec.Template.Spec.Containers {
+				if container.Name != "manager" {
+					continue
+				}
+				for _, env := range container.Env {
+					if env.Name == "POD_NAMESPACE" && env.ValueFrom != nil &&
+						env.ValueFrom.FieldRef != nil && env.ValueFrom.FieldRef.FieldPath == "metadata.namespace" {
+						namespaceEnvFound = true
+					}
+				}
+			}
+			if !namespaceEnvFound {
+				t.Error("resource controller Deployment does not set POD_NAMESPACE from metadata.namespace")
+			}
+
+			managerRoleResource, ok := resources["ClusterRole/dynamic-scoring-framework-manager-role"]
+			if !ok {
+				t.Fatal("missing resource-controller ClusterRole")
+			}
+			var managerRole rbacv1.ClusterRole
+			if err := yaml.Unmarshal([]byte(managerRoleResource.Raw), &managerRole); err != nil {
+				t.Fatal(err)
+			}
+			var hasManagedClusterListRule, hasManifestWorkCreateRule, hasManifestWorkNamedRule bool
+			for _, rule := range managerRole.Rules {
+				if reflect.DeepEqual(rule.APIGroups, []string{"dynamic-scoring.open-cluster-management.io"}) {
+					t.Error("resource-controller ClusterRole must not grant cluster-wide access to DSF custom resources")
+				}
+				if reflect.DeepEqual(rule.APIGroups, []string{"cluster.open-cluster-management.io"}) &&
+					reflect.DeepEqual(rule.Resources, []string{"managedclusters"}) {
+					hasManagedClusterListRule = reflect.DeepEqual(rule.Verbs, []string{"list"})
+				}
+				if reflect.DeepEqual(rule.APIGroups, []string{"work.open-cluster-management.io"}) &&
+					reflect.DeepEqual(rule.Resources, []string{"manifestworks"}) {
+					if len(rule.ResourceNames) == 0 && reflect.DeepEqual(rule.Verbs, []string{"create"}) {
+						hasManifestWorkCreateRule = true
+					}
+					if reflect.DeepEqual(rule.ResourceNames, []string{"dynamic-scoring-config-manifestwork"}) &&
+						reflect.DeepEqual(rule.Verbs, []string{"get", "update", "delete"}) {
+						hasManifestWorkNamedRule = true
+					}
+				}
+			}
+			if !hasManagedClusterListRule {
+				t.Error("resource-controller ClusterRole must only list ManagedClusters")
+			}
+			if !hasManifestWorkCreateRule || !hasManifestWorkNamedRule {
+				t.Error("ManifestWork read/update/delete permissions must target the DSF config work")
+			}
+
+			controllerRoleResource, ok := resources["Role/dynamic-scoring-framework-controller-cr-role"]
+			if !ok {
+				t.Fatal("missing namespaced resource-controller Role")
+			}
+			var controllerRole rbacv1.Role
+			if err := yaml.Unmarshal([]byte(controllerRoleResource.Raw), &controllerRole); err != nil {
+				t.Fatal(err)
+			}
+			if controllerRole.Namespace != tc.hub {
+				t.Errorf("resource-controller Role namespace=%q; want %q", controllerRole.Namespace, tc.hub)
+			}
+			if len(controllerRole.Rules) != 4 {
+				t.Errorf("resource-controller Role has %d rules; want 4", len(controllerRole.Rules))
+			}
+			var hasConfigFinalizerRule bool
+			for _, rule := range controllerRole.Rules {
+				if reflect.DeepEqual(rule.APIGroups, []string{"dynamic-scoring.open-cluster-management.io"}) &&
+					reflect.DeepEqual(rule.Resources, []string{"dynamicscoringconfigs/finalizers"}) &&
+					reflect.DeepEqual(rule.Verbs, []string{"update"}) {
+					hasConfigFinalizerRule = true
+				}
+			}
+			if !hasConfigFinalizerRule {
+				t.Error("resource-controller Role must allow updating DynamicScoringConfig finalizers")
+			}
 			if tc.name == customChartCaseName {
 				assertExtraVolumeAndMount(t, deployment, "custom-volume", "/custom")
 			}

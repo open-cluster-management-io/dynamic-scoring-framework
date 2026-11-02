@@ -9,51 +9,57 @@ rules:
   resources:
   - managedclusters
   verbs:
-  - create
-  - delete
-  - get
   - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - dynamic-scoring.open-cluster-management.io
-  resources:
-  - dynamicscorers
-  - dynamicscoringconfigs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - dynamic-scoring.open-cluster-management.io
-  resources:
-  - dynamicscorers/finalizers
-  - dynamicscoringconfigs/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - dynamic-scoring.open-cluster-management.io
-  resources:
-  - dynamicscorers/status
-  - dynamicscoringconfigs/status
-  verbs:
-  - get
-  - patch
-  - update
 - apiGroups:
   - work.open-cluster-management.io
   resources:
   - manifestworks
   verbs:
   - create
+- apiGroups:
+  - work.open-cluster-management.io
+  resourceNames:
+  - dynamic-scoring-config-manifestwork
+  resources:
+  - manifestworks
+  verbs:
   - delete
   - get
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: manager-role
+  namespace: system
+rules:
+- apiGroups:
+  - dynamic-scoring.open-cluster-management.io
+  resources:
+  - dynamicscorers
+  verbs:
+  - get
   - list
-  - patch
+  - watch
+- apiGroups:
+  - dynamic-scoring.open-cluster-management.io
+  resources:
+  - dynamicscorers/status
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - dynamic-scoring.open-cluster-management.io
+  resources:
+  - dynamicscoringconfigs
+  verbs:
+  - get
+  - list
   - update
   - watch
+- apiGroups:
+  - dynamic-scoring.open-cluster-management.io
+  resources:
+  - dynamicscoringconfigs/finalizers
+  verbs:
+  - update
