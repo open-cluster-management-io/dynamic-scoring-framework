@@ -39,15 +39,21 @@ import (
 // DynamicScorerReconciler reconciles a DynamicScorer object
 type DynamicScorerReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	Namespace string
 }
 
-// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscorers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscorers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscorers/finalizers,verbs=update
+// The system namespace is the Kubebuilder base namespace; config/default rewrites it to
+// the installation namespace. The Helm chart defines the equivalent namespaced Role.
+// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscorers,verbs=get;list;watch,namespace=system
+// +kubebuilder:rbac:groups=dynamic-scoring.open-cluster-management.io,resources=dynamicscorers/status,verbs=get;update,namespace=system
 
 func (r *DynamicScorerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
+	if req.Namespace != r.Namespace {
+		klog.InfoS("Ignoring DynamicScorer outside controller namespace", "namespace", req.Namespace, "name", req.Name)
+		return ctrl.Result{}, nil
+	}
 
 	klog.Info("Reconciling DynamicScorer: ", req.Name)
 
@@ -65,6 +71,10 @@ func (r *DynamicScorerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DynamicScorerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Namespace == "" {
+		return fmt.Errorf("controller namespace must be set")
+	}
+
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&dynamicscoringv1alpha1.DynamicScorer{}).
 		Named("dynamicscorer").
@@ -77,7 +87,7 @@ func (r *DynamicScorerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		// start periodic health check
-		startPeriodicHealthCheck(ctx, r.Client, common.DynamicScorerHealthCheckInterval*time.Second)
+		startPeriodicHealthCheck(ctx, r.Client, r.Namespace, common.DynamicScorerHealthCheckInterval*time.Second)
 	}()
 
 	return nil
@@ -147,9 +157,22 @@ func syncScoringConfig(_ context.Context, dynamicscorer *dynamicscoringv1alpha1.
 	return nil
 }
 
-// startPeriodicHealthCheck starts a goroutine that periodically checks the health of all DynamicScorers
-// and syncs their config if ConfigSyncMode is set to "Full"
-func startPeriodicHealthCheck(ctx context.Context, c client.Client, interval time.Duration) {
+// startPeriodicHealthCheck periodically checks scorers in the controller namespace
+// and syncs their config if ConfigSyncMode is set to "Full".
+func listDynamicScorers(ctx context.Context, c client.Client, namespace string) (*dynamicscoringv1alpha1.DynamicScorerList, error) {
+	if namespace == "" {
+		return nil, fmt.Errorf("namespace is required to list DynamicScorers")
+	}
+
+	var list dynamicscoringv1alpha1.DynamicScorerList
+	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+
+	return &list, nil
+}
+
+func startPeriodicHealthCheck(ctx context.Context, c client.Client, namespace string, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -158,8 +181,8 @@ func startPeriodicHealthCheck(ctx context.Context, c client.Client, interval tim
 	for {
 		select {
 		case <-ticker.C:
-			var list dynamicscoringv1alpha1.DynamicScorerList
-			if err := c.List(ctx, &list); err != nil {
+			list, err := listDynamicScorers(ctx, c, namespace)
+			if err != nil {
 				klog.Errorf("Failed to list DynamicScorers %v", err)
 				continue
 			}

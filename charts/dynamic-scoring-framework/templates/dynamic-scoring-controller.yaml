@@ -190,54 +190,78 @@ rules:
   resources:
   - managedclusters
   verbs:
-  - create
-  - delete
-  - get
   - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - dynamic-scoring.open-cluster-management.io
-  resources:
-  - dynamicscorers
-  - dynamicscoringconfigs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - dynamic-scoring.open-cluster-management.io
-  resources:
-  - dynamicscorers/finalizers
-  - dynamicscoringconfigs/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - dynamic-scoring.open-cluster-management.io
-  resources:
-  - dynamicscorers/status
-  - dynamicscoringconfigs/status
-  verbs:
-  - get
-  - patch
-  - update
 - apiGroups:
   - work.open-cluster-management.io
   resources:
   - manifestworks
   verbs:
   - create
+- apiGroups:
+  - work.open-cluster-management.io
+  resources:
+  - manifestworks
+  resourceNames:
+  - dynamic-scoring-config-manifestwork
+  verbs:
+  - get
+  - update
   - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: dynamic-scoring-framework
+  name: dynamic-scoring-framework-controller-cr-role
+  namespace: {{ .Values.hubSetting.namespace }}
+rules:
+- apiGroups:
+  - dynamic-scoring.open-cluster-management.io
+  resources:
+  - dynamicscorers
+  verbs:
   - get
   - list
-  - patch
-  - update
   - watch
+- apiGroups:
+  - dynamic-scoring.open-cluster-management.io
+  resources:
+  - dynamicscorers/status
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - dynamic-scoring.open-cluster-management.io
+  resources:
+  - dynamicscoringconfigs
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+- apiGroups:
+  - dynamic-scoring.open-cluster-management.io
+  resources:
+  - dynamicscoringconfigs/finalizers
+  verbs:
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: dynamic-scoring-framework
+  name: dynamic-scoring-framework-controller-cr-rolebinding
+  namespace: {{ .Values.hubSetting.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dynamic-scoring-framework-controller-cr-role
+subjects:
+- kind: ServiceAccount
+  name: dynamic-scoring-framework-controller
+  namespace: {{ .Values.hubSetting.namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -364,9 +388,13 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
 {{- with .Values.hubSetting.proxy }}
 {{- if or .httpProxy .httpsProxy .noProxy }}
-        env:
 {{- with .httpProxy }}
         - name: HTTP_PROXY
           value: {{ . | quote }}

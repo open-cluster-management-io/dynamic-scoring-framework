@@ -20,12 +20,40 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dynamicscoringv1alpha1 "open-cluster-management.io/dynamic-scoring/api/v1alpha1"
 	"open-cluster-management.io/dynamic-scoring/pkg/common"
 )
 
 var _ = Describe("DynamicScoringConfig helpers", func() {
+	Context("namespace scope", func() {
+		It("ignores DynamicScoringConfigs outside the controller namespace", func(ctx SpecContext) {
+			scheme := runtime.NewScheme()
+			Expect(corev1.AddToScheme(scheme)).To(Succeed())
+			Expect(dynamicscoringv1alpha1.AddToScheme(scheme)).To(Succeed())
+
+			config := &dynamicscoringv1alpha1.DynamicScoringConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: common.DynamicScoringConfigName, Namespace: "other-namespace"},
+			}
+			kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(config).Build()
+			reconciler := &DynamicScoringConfigReconciler{Client: kubeClient, Namespace: "controller-namespace"}
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{
+				Name: config.Name, Namespace: config.Namespace,
+			}})
+			Expect(err).NotTo(HaveOccurred())
+
+			actual := &dynamicscoringv1alpha1.DynamicScoringConfig{}
+			Expect(kubeClient.Get(ctx, types.NamespacedName{Name: config.Name, Namespace: config.Namespace}, actual)).To(Succeed())
+			Expect(actual.Finalizers).To(BeEmpty())
+		})
+	})
+
 	Context("mask helpers", func() {
 		It("builds and checks mask map", func() {
 			maskMap := buildMaskMap([]common.Mask{{ClusterName: "cluster-a", ScoreName: "latency"}})

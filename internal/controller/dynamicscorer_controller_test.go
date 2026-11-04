@@ -23,12 +23,57 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	dynamicscoringv1alpha1 "open-cluster-management.io/dynamic-scoring/api/v1alpha1"
 	"open-cluster-management.io/dynamic-scoring/pkg/common"
 )
 
 var _ = Describe("DynamicScorer helpers", func() {
+	Context("namespace scope", func() {
+		It("ignores DynamicScorers outside the controller namespace", func(ctx SpecContext) {
+			scheme := runtime.NewScheme()
+			Expect(corev1.AddToScheme(scheme)).To(Succeed())
+			Expect(dynamicscoringv1alpha1.AddToScheme(scheme)).To(Succeed())
+
+			scorer := &dynamicscoringv1alpha1.DynamicScorer{
+				ObjectMeta: metav1.ObjectMeta{Name: "foreign-scorer", Namespace: "other-namespace"},
+			}
+			kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(scorer).Build()
+			reconciler := &DynamicScorerReconciler{Client: kubeClient, Namespace: "controller-namespace"}
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{
+				Name: scorer.Name, Namespace: scorer.Namespace,
+			}})
+			Expect(err).NotTo(HaveOccurred())
+
+			actual := &dynamicscoringv1alpha1.DynamicScorer{}
+			Expect(kubeClient.Get(ctx, types.NamespacedName{Name: scorer.Name, Namespace: scorer.Namespace}, actual)).To(Succeed())
+			Expect(actual.Status.HealthStatus).To(BeEmpty())
+		})
+
+		It("lists scorers only from the controller namespace for health checks", func(ctx SpecContext) {
+			scheme := runtime.NewScheme()
+			Expect(corev1.AddToScheme(scheme)).To(Succeed())
+			Expect(dynamicscoringv1alpha1.AddToScheme(scheme)).To(Succeed())
+
+			kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+				&dynamicscoringv1alpha1.DynamicScorer{ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: "controller-namespace"}},
+				&dynamicscoringv1alpha1.DynamicScorer{ObjectMeta: metav1.ObjectMeta{Name: "foreign", Namespace: "other-namespace"}},
+			).Build()
+
+			scorers, err := listDynamicScorers(ctx, kubeClient, "controller-namespace")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(scorers.Items).To(HaveLen(1))
+			Expect(scorers.Items[0].Name).To(Equal("local"))
+		})
+	})
+
 	Context("syncScoringHealthz", func() {
 		It("marks scorer active on 200", func(ctx SpecContext) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

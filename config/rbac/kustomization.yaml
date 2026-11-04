@@ -7,6 +7,7 @@ resources:
 - service_account.yaml
 - role.yaml
 - role_binding.yaml
+- dynamicscoring_controller_role_binding.yaml
 - leader_election_role.yaml
 - leader_election_role_binding.yaml
 # The following RBAC configurations are used to protect
@@ -28,4 +29,3 @@ resources:
 - dynamicscorer_admin_role.yaml
 - dynamicscorer_editor_role.yaml
 - dynamicscorer_viewer_role.yaml
-
