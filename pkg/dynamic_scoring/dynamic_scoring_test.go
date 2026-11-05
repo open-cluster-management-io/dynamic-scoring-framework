@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"open-cluster-management.io/addon-framework/pkg/addonfactory"
@@ -341,4 +342,86 @@ func TestAgentNamespaceHasOCMAddonLabel(t *testing.T) {
 		return
 	}
 	t.Fatalf("rendered Namespace %q not found", installNamespace)
+}
+
+func TestAgentRBACIsNamespacedAndLeastPrivilege(t *testing.T) {
+	const installNamespace = "custom-agent"
+	agentAddon, err := addonfactory.NewAgentAddonFactory(AddonName, FS, "manifests/templates").
+		WithAgentInstallNamespace(func(context.Context, *addonapiv1beta1.ManagedClusterAddOn) (string, error) {
+			return installNamespace, nil
+		}).
+		BuildTemplateAgentAddon()
+	if err != nil {
+		t.Fatalf("build template agent addon: %v", err)
+	}
+
+	manifests, err := agentAddon.Manifests(
+		t.Context(),
+		&clusterv1.ManagedCluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster-a"}},
+		&addonapiv1beta1.ManagedClusterAddOn{ObjectMeta: metav1.ObjectMeta{Name: AddonName}},
+	)
+	if err != nil {
+		t.Fatalf("render agent manifests: %v", err)
+	}
+
+	var role *rbacv1.Role
+	var binding *rbacv1.RoleBinding
+	for _, manifest := range manifests {
+		switch typed := manifest.(type) {
+		case *rbacv1.Role:
+			if typed.Name == "dynamic-scoring-agent" {
+				role = typed
+			}
+		case *rbacv1.RoleBinding:
+			if typed.Name == "dynamic-scoring-agent" {
+				binding = typed
+			}
+		case *rbacv1.ClusterRoleBinding:
+			t.Fatalf("unexpected ClusterRoleBinding %q", typed.Name)
+		}
+	}
+
+	if role == nil {
+		t.Fatal("agent Role not found")
+	}
+	if role.Namespace != installNamespace {
+		t.Errorf("agent Role namespace=%q; want %q", role.Namespace, installNamespace)
+	}
+	wantRules := []rbacv1.PolicyRule{
+		{
+			APIGroups:     []string{""},
+			Resources:     []string{"configmaps"},
+			ResourceNames: []string{"dynamic-scoring-config"},
+			Verbs:         []string{"get", "list", "watch"},
+		},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
+		{
+			APIGroups:     []string{"coordination.k8s.io"},
+			Resources:     []string{"leases"},
+			ResourceNames: []string{AddonName},
+			Verbs:         []string{"get", "update"},
+		},
+		{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"create"}},
+	}
+	if !reflect.DeepEqual(role.Rules, wantRules) {
+		t.Errorf("agent Role rules = %#v; want %#v", role.Rules, wantRules)
+	}
+
+	if binding == nil {
+		t.Fatal("agent RoleBinding not found")
+	}
+	if binding.Namespace != installNamespace {
+		t.Errorf("agent RoleBinding namespace=%q; want %q", binding.Namespace, installNamespace)
+	}
+	if binding.RoleRef.Kind != "Role" || binding.RoleRef.Name != role.Name {
+		t.Errorf("agent RoleBinding roleRef=%#v; want Role %q", binding.RoleRef, role.Name)
+	}
+	wantSubjects := []rbacv1.Subject{{
+		Kind:      "ServiceAccount",
+		Name:      "dynamic-scoring-agent-sa",
+		Namespace: installNamespace,
+	}}
+	if !reflect.DeepEqual(binding.Subjects, wantSubjects) {
+		t.Errorf("agent RoleBinding subjects = %#v; want %#v", binding.Subjects, wantSubjects)
+	}
 }

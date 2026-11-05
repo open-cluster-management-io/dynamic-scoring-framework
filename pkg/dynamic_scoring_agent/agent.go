@@ -19,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	corev1informers "k8s.io/client-go/informers/core/v1"
@@ -189,17 +190,20 @@ func (o *AgentOptions) RunAgent(ctx context.Context, kubeconfig *rest.Config) er
 		10*time.Minute,
 		informers.WithNamespace(o.SpokeClusterName),
 	)
-	spokeInformerFactory := informers.NewSharedInformerFactoryWithOptions(
+	dynamicScoringConfigMapInformerFactory := informers.NewSharedInformerFactoryWithOptions(
 		spokeKubeClient,
 		10*time.Minute,
 		informers.WithNamespace(common.DynamicScoringNamespace),
+		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+			options.FieldSelector = fields.OneTermEqualSelector("metadata.name", common.DynamicScoringConfigName).String()
+		}),
 	)
 
 	_, controller := newAgentController(
 		hubClusterClient,
 		spokeKubeClient,
 		addonClient,
-		spokeInformerFactory.Core().V1().ConfigMaps(),
+		dynamicScoringConfigMapInformerFactory.Core().V1().ConfigMaps(),
 		o.SpokeClusterName,
 		o.AddonName,
 		o.AddonNamespace,
@@ -211,7 +215,7 @@ func (o *AgentOptions) RunAgent(ctx context.Context, kubeconfig *rest.Config) er
 	)
 
 	go hubKubeInformerFactory.Start(ctx.Done())
-	go spokeInformerFactory.Start(ctx.Done())
+	go dynamicScoringConfigMapInformerFactory.Start(ctx.Done())
 	go controller.Run(ctx, 1)
 	go leaseUpdater.Start(ctx)
 
