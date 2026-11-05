@@ -1,0 +1,22 @@
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: dynamic-scoring-agent
+  namespace: {{ .AddonInstallNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["dynamic-scoring-config"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    # DynamicScorer can reference arbitrary Secret names; access is limited to this namespace.
+    verbs: ["get"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["dynamic-scoring-framework"]
+    verbs: ["get", "update"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    # Kubernetes RBAC cannot restrict create by resourceNames.
+    verbs: ["create"]
