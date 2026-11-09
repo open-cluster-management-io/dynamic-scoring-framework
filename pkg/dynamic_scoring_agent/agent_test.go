@@ -3,6 +3,7 @@ package dynamic_scoring_agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -244,11 +245,11 @@ func TestScoringWorkerResetsTickerWhenIntervalChanges(t *testing.T) {
 	worker := &ScoringWorker{intervalUpdate: make(chan struct{}, 1)}
 	initialSummary := &common.ScorerSummary{
 		ScoreName:        "score-a",
-		ScoringInterval:  3600,
+		ScoringInterval:  1,
 		ScoringEndpoint:  server.URL,
 		ScoreDestination: common.ScoreDestinationNone,
 	}
-	worker.setSummary(initialSummary)
+	worker.setSummary(initialSummary, time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -260,14 +261,62 @@ func TestScoringWorkerResetsTickerWhenIntervalChanges(t *testing.T) {
 		<-done
 	}()
 
-	updatedSummary := *initialSummary
-	updatedSummary.ScoringInterval = 1
-	worker.setSummary(&updatedSummary)
-
 	select {
 	case <-requests:
 	case <-time.After(3 * time.Second):
-		t.Fatal("worker did not adopt the updated scoring interval")
+		t.Fatal("worker did not start with its initial scoring interval")
+	}
+
+	updatedSummary := *initialSummary
+	updatedSummary.ScoringInterval = 3
+	worker.setSummary(&updatedSummary, 3*time.Second)
+	select {
+	case <-requests:
+		t.Fatal("worker did not reset its ticker to the updated interval")
+	case <-time.After(1500 * time.Millisecond):
+	}
+	select {
+	case <-requests:
+	case <-time.After(4 * time.Second):
+		t.Fatal("worker did not score after the updated interval")
+	}
+}
+
+func TestConfigMapSkipsScorersWithInvalidIntervals(t *testing.T) {
+	for _, interval := range []int{0, -1} {
+		for _, hasWorker := range []bool{false, true} {
+			t.Run(fmt.Sprintf("interval-%d/worker-%t", interval, hasWorker), func(t *testing.T) {
+				const scoreName = "score-a"
+				summary := common.ScorerSummary{ScoreName: scoreName, ScoringInterval: interval}
+				controller := newTestAgentController(t, fake.NewSimpleClientset(), []common.ScorerSummary{summary})
+				workerCtx, workerCancel := context.WithCancel(context.Background())
+				defer workerCancel()
+				if hasWorker {
+					controller.scoringWorkers[scoreName] = &ScoringWorker{cancel: workerCancel}
+					controller.setSourceAuth(scoreName, "source-token")
+					controller.setScoringAuth(scoreName, "scoring-token")
+				}
+
+				controller.handleConfigMapUpdate(context.Background(), testConfigMap(t, []common.ScorerSummary{summary}))
+
+				if _, exists := controller.scoringWorkers[scoreName]; exists {
+					t.Fatal("scorer with invalid interval was started or left running")
+				}
+				if hasWorker {
+					select {
+					case <-workerCtx.Done():
+					default:
+						t.Fatal("existing scorer worker was not stopped")
+					}
+					if got := controller.getSourceAuth(scoreName); got != "" {
+						t.Errorf("source auth after invalid interval = %q; want empty", got)
+					}
+					if got := controller.getScoringAuth(scoreName); got != "" {
+						t.Errorf("scoring auth after invalid interval = %q; want empty", got)
+					}
+				}
+			})
+		}
 	}
 }
 

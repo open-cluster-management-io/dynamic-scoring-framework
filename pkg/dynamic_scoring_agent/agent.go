@@ -245,14 +245,16 @@ type ScoringWorker struct {
 	cancel         context.CancelFunc
 	summaryLock    sync.RWMutex
 	summary        *common.ScorerSummary
+	interval       time.Duration
 	intervalUpdate chan struct{}
 }
 
-func (w *ScoringWorker) setSummary(summary *common.ScorerSummary) {
+func (w *ScoringWorker) setSummary(summary *common.ScorerSummary, interval time.Duration) {
 	copy := *summary
 	w.summaryLock.Lock()
-	intervalChanged := w.summary != nil && w.summary.ScoringInterval != copy.ScoringInterval
+	intervalChanged := w.summary != nil && w.interval != interval
 	w.summary = &copy
+	w.interval = interval
 	w.summaryLock.Unlock()
 	if intervalChanged {
 		select {
@@ -267,6 +269,12 @@ func (w *ScoringWorker) getSummary() *common.ScorerSummary {
 	defer w.summaryLock.RUnlock()
 	copy := *w.summary
 	return &copy
+}
+
+func (w *ScoringWorker) getInterval() time.Duration {
+	w.summaryLock.RLock()
+	defer w.summaryLock.RUnlock()
+	return w.interval
 }
 
 type agentController struct {
@@ -409,20 +417,27 @@ func (c *agentController) handleConfigMapUpdate(ctx context.Context, cm *corev1.
 	// Track active scorers and manage workers
 	active := make(map[string]bool)
 	for _, s := range summaries {
-		active[s.ScoreName] = true
 		klog.Infof("Fetch secrets : %s", s.ScoreName)
+		interval, valid := scoringIntervalDuration(s.ScoringInterval)
+		if !valid {
+			klog.Warningf(
+				"Skipping scorer with non-positive scoring interval (%s): %d",
+				s.ScoreName,
+				s.ScoringInterval,
+			)
+			continue
+		}
 		if err := c.fetchSourceAuth(ctx, s); err != nil {
 			klog.ErrorS(err, "Failed to fetch source auth, skipping scorer", "scoreName", s.ScoreName)
-			delete(active, s.ScoreName)
 			continue
 		}
 		if err := c.fetchScoringAuth(ctx, s); err != nil {
 			klog.ErrorS(err, "Failed to fetch scoring auth, skipping scorer", "scoreName", s.ScoreName)
-			delete(active, s.ScoreName)
 			continue
 		}
 		klog.Infof("Start target : %s", s.ScoreName)
-		c.ensureScoringWorker(ctx, &s, true)
+		c.ensureScoringWorker(ctx, &s, interval, true)
+		active[s.ScoreName] = true
 	}
 
 	var workersToStop []string
@@ -444,12 +459,14 @@ func (c *agentController) handleConfigMapUpdate(ctx context.Context, cm *corev1.
 func (c *agentController) ensureScoringWorker(
 	ctx context.Context,
 	summary *common.ScorerSummary,
+	interval time.Duration,
 	updateExisting bool,
 ) {
+	// The interval has already been validated while reconciling the ConfigMap summary.
 	c.workerLock.Lock()
 	if worker, exists := c.scoringWorkers[summary.ScoreName]; exists {
 		if updateExisting {
-			worker.setSummary(summary)
+			worker.setSummary(summary, interval)
 		}
 		c.workerLock.Unlock()
 		klog.Infof("Scoring worker already exists for %s", summary.ScoreName)
@@ -457,7 +474,7 @@ func (c *agentController) ensureScoringWorker(
 	}
 	ctxWorker, cancel := context.WithCancel(ctx)
 	worker := &ScoringWorker{cancel: cancel, intervalUpdate: make(chan struct{}, 1)}
-	worker.setSummary(summary)
+	worker.setSummary(summary, interval)
 	c.scoringWorkers[summary.ScoreName] = worker
 	c.workerLock.Unlock()
 	go c.startScoringLoop(ctxWorker, worker)
@@ -534,9 +551,17 @@ func (c *agentController) clearAuth(scoreName string) {
 	delete(c.scoringAuth, scoreName)
 }
 
+func scoringIntervalDuration(intervalSeconds int) (time.Duration, bool) {
+	if intervalSeconds <= 0 {
+		return 0, false
+	}
+
+	return time.Duration(intervalSeconds) * time.Second, true
+}
+
 func (c *agentController) startScoringLoop(ctx context.Context, worker *ScoringWorker) {
 	summary := worker.getSummary()
-	ticker := time.NewTicker(time.Duration(summary.ScoringInterval) * time.Second)
+	ticker := time.NewTicker(worker.getInterval())
 	defer ticker.Stop()
 
 	klog.Infof("Start Scoring Loop : %s", summary.ScoreName)
@@ -548,8 +573,7 @@ func (c *agentController) startScoringLoop(ctx context.Context, worker *ScoringW
 			klog.Infof("Exiting scoring loop for %s", summary.ScoreName)
 			return
 		case <-worker.intervalUpdate:
-			summary := worker.getSummary()
-			ticker.Reset(time.Duration(summary.ScoringInterval) * time.Second)
+			ticker.Reset(worker.getInterval())
 		case <-ticker.C:
 			summary := worker.getSummary()
 			if err := c.performScoring(ctx, summary); err != nil {
