@@ -394,7 +394,7 @@ func TestAgentRBACIsNamespacedAndLeastPrivilege(t *testing.T) {
 			ResourceNames: []string{"dynamic-scoring-config"},
 			Verbs:         []string{"get", "list", "watch"},
 		},
-		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch"}},
 		{
 			APIGroups:     []string{"coordination.k8s.io"},
 			Resources:     []string{"leases"},

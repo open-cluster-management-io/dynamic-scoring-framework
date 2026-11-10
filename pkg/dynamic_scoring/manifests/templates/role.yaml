@@ -11,7 +11,7 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     # DynamicScorer can reference arbitrary Secret names; access is limited to this namespace.
-    verbs: ["get"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     resourceNames: ["dynamic-scoring-framework"]

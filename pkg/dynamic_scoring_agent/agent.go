@@ -39,6 +39,11 @@ import (
 	"open-cluster-management.io/sdk-go/pkg/basecontroller/factory"
 )
 
+const (
+	configMapQueueKeyPrefix = "configmap:"
+	secretQueueKeyPrefix    = "secret:"
+)
+
 var (
 	dynamicScoreGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -198,12 +203,18 @@ func (o *AgentOptions) RunAgent(ctx context.Context, kubeconfig *rest.Config) er
 			options.FieldSelector = fields.OneTermEqualSelector("metadata.name", common.DynamicScoringConfigName).String()
 		}),
 	)
+	secretInformerFactory := informers.NewSharedInformerFactoryWithOptions(
+		spokeKubeClient,
+		0,
+		informers.WithNamespace(o.AddonNamespace),
+	)
 
 	_, controller := newAgentController(
 		hubClusterClient,
 		spokeKubeClient,
 		addonClient,
 		dynamicScoringConfigMapInformerFactory.Core().V1().ConfigMaps(),
+		secretInformerFactory.Core().V1().Secrets(),
 		o.SpokeClusterName,
 		o.AddonName,
 		o.AddonNamespace,
@@ -216,6 +227,7 @@ func (o *AgentOptions) RunAgent(ctx context.Context, kubeconfig *rest.Config) er
 
 	go hubKubeInformerFactory.Start(ctx.Done())
 	go dynamicScoringConfigMapInformerFactory.Start(ctx.Done())
+	go secretInformerFactory.Start(ctx.Done())
 	go controller.Run(ctx, 1)
 	go leaseUpdater.Start(ctx)
 
@@ -230,8 +242,39 @@ func (o *AgentOptions) RunAgent(ctx context.Context, kubeconfig *rest.Config) er
 }
 
 type ScoringWorker struct {
-	cancel  context.CancelFunc
-	summary *common.ScorerSummary
+	cancel         context.CancelFunc
+	summaryLock    sync.RWMutex
+	summary        *common.ScorerSummary
+	interval       time.Duration
+	intervalUpdate chan struct{}
+}
+
+func (w *ScoringWorker) setSummary(summary *common.ScorerSummary, interval time.Duration) {
+	copy := *summary
+	w.summaryLock.Lock()
+	intervalChanged := w.summary != nil && w.interval != interval
+	w.summary = &copy
+	w.interval = interval
+	w.summaryLock.Unlock()
+	if intervalChanged {
+		select {
+		case w.intervalUpdate <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (w *ScoringWorker) getSummary() *common.ScorerSummary {
+	w.summaryLock.RLock()
+	defer w.summaryLock.RUnlock()
+	copy := *w.summary
+	return &copy
+}
+
+func (w *ScoringWorker) getInterval() time.Duration {
+	w.summaryLock.RLock()
+	defer w.summaryLock.RUnlock()
+	return w.interval
 }
 
 type agentController struct {
@@ -239,11 +282,13 @@ type agentController struct {
 	spokeKubeClient      kubernetes.Interface
 	addonClient          addonv1alpha1client.Interface
 	spokeConfigMapLister corev1lister.ConfigMapLister
+	referencedSecrets    map[string]struct{}
 	clusterName          string
 	addonName            string
 	addonNamespace       string
 	scoringWorkers       map[string]*ScoringWorker
 	workerLock           sync.Mutex
+	authLock             sync.RWMutex
 	sourceAuth           map[string]string
 	scoringAuth          map[string]string
 	httpClient           *http.Client
@@ -255,6 +300,7 @@ func newAgentController(
 	spokeKubeClient kubernetes.Interface,
 	addonClient addonv1alpha1client.Interface,
 	configmapInformers corev1informers.ConfigMapInformer,
+	secretInformers corev1informers.SecretInformer,
 	clusterName string,
 	addonName string,
 	addonNamespace string,
@@ -267,6 +313,7 @@ func newAgentController(
 		addonName:            addonName,
 		addonNamespace:       addonNamespace,
 		spokeConfigMapLister: configmapInformers.Lister(),
+		referencedSecrets:    make(map[string]struct{}),
 		scoringWorkers:       make(map[string]*ScoringWorker),
 		workerLock:           sync.Mutex{},
 		sourceAuth:           make(map[string]string),
@@ -281,17 +328,54 @@ func newAgentController(
 		},
 		previousLabelSets: make(map[string]map[string]struct{}),
 	}
-	controller := factory.New().WithInformersQueueKeysFunc(
-		func(obj runtime.Object) []string {
-			key, _ := cache.MetaNamespaceKeyFunc(obj)
-			return []string{key}
-		}, configmapInformers.Informer()).
+	controller := factory.New().
+		WithInformersQueueKeysFunc(queueKeys(configMapQueueKeyPrefix), configmapInformers.Informer()).
+		WithInformersQueueKeysFunc(queueKeys(secretQueueKeyPrefix), secretInformers.Informer()).
 		WithSync(c.sync).ToController("dynamic-scoring-agent-controller")
 
 	return c, controller
 }
 
 func (c *agentController) sync(ctx context.Context, syncCtx factory.SyncContext, key string) error {
+	if strings.HasPrefix(key, configMapQueueKeyPrefix) {
+		return c.syncConfigMap(ctx, strings.TrimPrefix(key, configMapQueueKeyPrefix))
+	}
+	if strings.HasPrefix(key, secretQueueKeyPrefix) {
+		ns, name, err := cache.SplitMetaNamespaceKey(strings.TrimPrefix(key, secretQueueKeyPrefix))
+		if err != nil {
+			return err
+		}
+		if ns != c.addonNamespace {
+			return nil
+		}
+		if _, referenced := c.referencedSecrets[name]; !referenced {
+			// The Secret is not referenced by any active scorer, so we don't need to do anything.
+			return nil
+		}
+
+		// The ConfigMap is the source of truth; a referenced Secret event only triggers its reconciliation.
+		// This ensures if a secret is updated/deleted/created, the corresponding scorer will be reconciled
+		// and the new secret will be fetched.
+		configMapKey := common.DynamicScoringNamespace + "/" + common.DynamicScoringConfigName
+		return c.syncConfigMap(ctx, configMapKey)
+	}
+
+	return nil
+}
+
+func queueKeys(prefix string) factory.ObjectQueueKeysFunc {
+	return func(obj runtime.Object) []string {
+		key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+		if err != nil {
+			klog.ErrorS(err, "Failed to create informer queue key", "prefix", prefix)
+			return nil
+		}
+
+		return []string{prefix + key}
+	}
+}
+
+func (c *agentController) syncConfigMap(ctx context.Context, key string) error {
 	ns, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
@@ -326,66 +410,158 @@ func (c *agentController) handleConfigMapUpdate(ctx context.Context, cm *corev1.
 		klog.ErrorS(err, "Invalid JSON in summaries")
 		return
 	}
+	c.referencedSecrets = referencedSecretNames(summaries)
 
 	klog.Infof("Summay Num: %d", len(summaries))
 
 	// Track active scorers and manage workers
 	active := make(map[string]bool)
 	for _, s := range summaries {
-		active[s.ScoreName] = true
 		klog.Infof("Fetch secrets : %s", s.ScoreName)
+		interval, valid := scoringIntervalDuration(s.ScoringInterval)
+		if !valid {
+			klog.Warningf(
+				"Skipping scorer with non-positive scoring interval (%s): %d",
+				s.ScoreName,
+				s.ScoringInterval,
+			)
+			continue
+		}
 		if err := c.fetchSourceAuth(ctx, s); err != nil {
 			klog.ErrorS(err, "Failed to fetch source auth, skipping scorer", "scoreName", s.ScoreName)
-			delete(active, s.ScoreName)
 			continue
 		}
 		if err := c.fetchScoringAuth(ctx, s); err != nil {
 			klog.ErrorS(err, "Failed to fetch scoring auth, skipping scorer", "scoreName", s.ScoreName)
-			delete(active, s.ScoreName)
 			continue
 		}
 		klog.Infof("Start target : %s", s.ScoreName)
-		c.workerLock.Lock()
-		if _, exists := c.scoringWorkers[s.ScoreName]; !exists {
-			ctxWorker, cancel := context.WithCancel(ctx)
-			c.scoringWorkers[s.ScoreName] = &ScoringWorker{
-				cancel:  cancel,
-				summary: &s,
-			}
-			c.workerLock.Unlock()
-			go c.startScoringLoop(ctxWorker, c.scoringWorkers[s.ScoreName].summary)
-			klog.Infof("Started scoring worker for %s", s.ScoreName)
-		} else {
-			c.scoringWorkers[s.ScoreName].summary = &s
-			c.workerLock.Unlock()
-			klog.Infof("Scoring worker already exists for %s", s.ScoreName)
-		}
+		c.ensureScoringWorker(ctx, &s, interval, true)
+		active[s.ScoreName] = true
 	}
 
 	var workersToStop []string
 
 	c.workerLock.Lock()
-	for name, worker := range c.scoringWorkers {
+	for name := range c.scoringWorkers {
 		if !active[name] {
-			worker.cancel()
 			workersToStop = append(workersToStop, name)
-			delete(c.scoringWorkers, name)
-			klog.Infof("Stopped scoring worker for %s", name)
 		}
 	}
 	c.workerLock.Unlock()
 
 	// Delete metrics for stopped workers
 	for _, name := range workersToStop {
-		dynamicScoreGauge.DeletePartialMatch(prometheus.Labels{
-			common.DynamicScoreLabelPrefix + "score_name": name,
-		})
-		klog.Infof("Deleted metrics for stopped worker %s", name)
+		c.stopScoringWorker(name)
 	}
 }
 
-func (c *agentController) startScoringLoop(ctx context.Context, summary *common.ScorerSummary) {
-	ticker := time.NewTicker(time.Duration(summary.ScoringInterval) * time.Second)
+func (c *agentController) ensureScoringWorker(
+	ctx context.Context,
+	summary *common.ScorerSummary,
+	interval time.Duration,
+	updateExisting bool,
+) {
+	// The interval has already been validated while reconciling the ConfigMap summary.
+	c.workerLock.Lock()
+	if worker, exists := c.scoringWorkers[summary.ScoreName]; exists {
+		if updateExisting {
+			worker.setSummary(summary, interval)
+		}
+		c.workerLock.Unlock()
+		klog.Infof("Scoring worker already exists for %s", summary.ScoreName)
+		return
+	}
+	ctxWorker, cancel := context.WithCancel(ctx)
+	worker := &ScoringWorker{cancel: cancel, intervalUpdate: make(chan struct{}, 1)}
+	worker.setSummary(summary, interval)
+	c.scoringWorkers[summary.ScoreName] = worker
+	c.workerLock.Unlock()
+	go c.startScoringLoop(ctxWorker, worker)
+	klog.Infof("Started scoring worker for %s", summary.ScoreName)
+}
+
+func (c *agentController) stopScoringWorker(scoreName string) {
+	c.workerLock.Lock()
+	worker, exists := c.scoringWorkers[scoreName]
+	if exists {
+		worker.cancel()
+		delete(c.scoringWorkers, scoreName)
+	}
+	c.workerLock.Unlock()
+	c.clearAuth(scoreName)
+	dynamicScoreGauge.DeletePartialMatch(prometheus.Labels{
+		common.DynamicScoreLabelPrefix + "score_name": scoreName,
+	})
+	if exists {
+		klog.Infof("Stopped scoring worker for %s", scoreName)
+		klog.Infof("Deleted metrics for stopped worker %s", scoreName)
+	}
+}
+
+func referencedSecretNames(summaries []common.ScorerSummary) map[string]struct{} {
+	referenced := make(map[string]struct{})
+	for _, summary := range summaries {
+		if summary.SourceEndpointAuthName != "" && summary.SourceEndpointAuthKey != "" {
+			referenced[summary.SourceEndpointAuthName] = struct{}{}
+		}
+		if summary.ScoringEndpointAuthName != "" && summary.ScoringEndpointAuthKey != "" {
+			referenced[summary.ScoringEndpointAuthName] = struct{}{}
+		}
+	}
+	return referenced
+}
+
+func (c *agentController) setSourceAuth(scoreName, token string) {
+	c.authLock.Lock()
+	defer c.authLock.Unlock()
+	if token == "" {
+		delete(c.sourceAuth, scoreName)
+		return
+	}
+	c.sourceAuth[scoreName] = token
+}
+
+func (c *agentController) getSourceAuth(scoreName string) string {
+	c.authLock.RLock()
+	defer c.authLock.RUnlock()
+	return c.sourceAuth[scoreName]
+}
+
+func (c *agentController) setScoringAuth(scoreName, token string) {
+	c.authLock.Lock()
+	defer c.authLock.Unlock()
+	if token == "" {
+		delete(c.scoringAuth, scoreName)
+		return
+	}
+	c.scoringAuth[scoreName] = token
+}
+
+func (c *agentController) getScoringAuth(scoreName string) string {
+	c.authLock.RLock()
+	defer c.authLock.RUnlock()
+	return c.scoringAuth[scoreName]
+}
+
+func (c *agentController) clearAuth(scoreName string) {
+	c.authLock.Lock()
+	defer c.authLock.Unlock()
+	delete(c.sourceAuth, scoreName)
+	delete(c.scoringAuth, scoreName)
+}
+
+func scoringIntervalDuration(intervalSeconds int) (time.Duration, bool) {
+	if intervalSeconds <= 0 {
+		return 0, false
+	}
+
+	return time.Duration(intervalSeconds) * time.Second, true
+}
+
+func (c *agentController) startScoringLoop(ctx context.Context, worker *ScoringWorker) {
+	summary := worker.getSummary()
+	ticker := time.NewTicker(worker.getInterval())
 	defer ticker.Stop()
 
 	klog.Infof("Start Scoring Loop : %s", summary.ScoreName)
@@ -393,9 +569,13 @@ func (c *agentController) startScoringLoop(ctx context.Context, summary *common.
 	for {
 		select {
 		case <-ctx.Done():
+			summary := worker.getSummary()
 			klog.Infof("Exiting scoring loop for %s", summary.ScoreName)
 			return
+		case <-worker.intervalUpdate:
+			ticker.Reset(worker.getInterval())
 		case <-ticker.C:
+			summary := worker.getSummary()
 			if err := c.performScoring(ctx, summary); err != nil {
 				klog.Errorf("Scoring error (%s): %v", summary.ScoreName, err)
 				requestsCounter.WithLabelValues(summary.ScoreName, "failure").Inc()
@@ -435,7 +615,7 @@ func (c *agentController) performScoring(ctx context.Context, summary *common.Sc
 				return fmt.Errorf("failed to create prometheus query request (%s): %w", summary.ScoreName, err)
 			}
 			// sourceHeader
-			if token, ok := c.sourceAuth[summary.ScoreName]; ok && token != "" {
+			if token := c.getSourceAuth(summary.ScoreName); token != "" {
 				req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 			}
 
@@ -484,7 +664,7 @@ func (c *agentController) performScoring(ctx context.Context, summary *common.Sc
 
 	// scoringHeader
 	req2.Header.Set("Content-Type", "application/json")
-	if token, ok := c.scoringAuth[summary.ScoreName]; ok && token != "" {
+	if token := c.getScoringAuth(summary.ScoreName); token != "" {
 		req2.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	}
 
@@ -590,42 +770,48 @@ func getValidString(m map[string]string, key string, truncate bool) string {
 }
 
 func (c *agentController) fetchSourceAuth(ctx context.Context, summary common.ScorerSummary) error {
-	if summary.SourceEndpointAuthName != "" && summary.SourceEndpointAuthKey != "" {
-		secret, err := c.spokeKubeClient.CoreV1().
-			Secrets(c.addonNamespace).
-			Get(ctx, summary.SourceEndpointAuthName, metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to get source auth secret (%s): %w", summary.ScoreName, err)
-		} else {
-			if val, ok := secret.Data[summary.SourceEndpointAuthKey]; ok {
-				c.sourceAuth[summary.ScoreName] = string(val)
-			} else {
-				return fmt.Errorf("source auth key not found in secret (%s): %s", summary.ScoreName, summary.SourceEndpointAuthKey)
-			}
-		}
+	if summary.SourceEndpointAuthName == "" || summary.SourceEndpointAuthKey == "" {
+		c.setSourceAuth(summary.ScoreName, "")
+		return nil
 	}
+	secret, err := c.spokeKubeClient.CoreV1().
+		Secrets(c.addonNamespace).
+		Get(ctx, summary.SourceEndpointAuthName, metav1.GetOptions{})
+	if err != nil {
+		c.setSourceAuth(summary.ScoreName, "")
+		return fmt.Errorf("failed to get source auth secret (%s): %w", summary.ScoreName, err)
+	}
+	val, ok := secret.Data[summary.SourceEndpointAuthKey]
+	if !ok {
+		c.setSourceAuth(summary.ScoreName, "")
+		return fmt.Errorf("source auth key not found in secret (%s): %s", summary.ScoreName, summary.SourceEndpointAuthKey)
+	}
+	c.setSourceAuth(summary.ScoreName, string(val))
 	return nil
 }
 
 func (c *agentController) fetchScoringAuth(ctx context.Context, summary common.ScorerSummary) error {
-	if summary.ScoringEndpointAuthName != "" && summary.ScoringEndpointAuthKey != "" {
-		secret, err := c.spokeKubeClient.CoreV1().
-			Secrets(c.addonNamespace).
-			Get(ctx, summary.ScoringEndpointAuthName, metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to get scoring auth secret (%s): %w", summary.ScoreName, err)
-		} else {
-			if val, ok := secret.Data[summary.ScoringEndpointAuthKey]; ok {
-				c.scoringAuth[summary.ScoreName] = string(val)
-			} else {
-				return fmt.Errorf(
-					"scoring auth key not found in secret (%s): %s",
-					summary.ScoreName,
-					summary.ScoringEndpointAuthKey,
-				)
-			}
-		}
+	if summary.ScoringEndpointAuthName == "" || summary.ScoringEndpointAuthKey == "" {
+		c.setScoringAuth(summary.ScoreName, "")
+		return nil
 	}
+	secret, err := c.spokeKubeClient.CoreV1().
+		Secrets(c.addonNamespace).
+		Get(ctx, summary.ScoringEndpointAuthName, metav1.GetOptions{})
+	if err != nil {
+		c.setScoringAuth(summary.ScoreName, "")
+		return fmt.Errorf("failed to get scoring auth secret (%s): %w", summary.ScoreName, err)
+	}
+	val, ok := secret.Data[summary.ScoringEndpointAuthKey]
+	if !ok {
+		c.setScoringAuth(summary.ScoreName, "")
+		return fmt.Errorf(
+			"scoring auth key not found in secret (%s): %s",
+			summary.ScoreName,
+			summary.ScoringEndpointAuthKey,
+		)
+	}
+	c.setScoringAuth(summary.ScoreName, string(val))
 	return nil
 }
 

@@ -17,6 +17,7 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -57,7 +58,7 @@ var _ = Describe("Dynamic Scoring Framework chart", Ordered, func() {
 			helm = "helm"
 		}
 		if _, err := utils.Run(exec.Command(
-			helm, "uninstall", helmReleaseName, "--namespace", hubNamespace, "--ignore-not-found",
+			helm, "uninstall", helmReleaseName, "--namespace", hubNamespace,
 		)); err != nil {
 			_, _ = fmt.Fprintf(GinkgoWriter, "warning: failed to uninstall chart: %v\n", err)
 		}
@@ -204,7 +205,262 @@ spec:
 			)
 		}).WithTimeout(3 * time.Minute).WithPolling(2 * time.Second).Should(Equal("42"))
 	})
+
+	It("refreshes auth from referenced Secret events and stops when a Secret is invalid", func() {
+		By("deploying an HTTP test server that records source and scoring authorization headers")
+		_, err := utils.Run(exec.Command(
+			"kubectl", "create", "deployment", "dsf-e2e-auth-server",
+			"--namespace", addonNamespace, "--image", e2eAuthServerImage(),
+		))
+		Expect(err).NotTo(HaveOccurred())
+		_, err = utils.Run(exec.Command(
+			"kubectl", "expose", "deployment", "dsf-e2e-auth-server", "--namespace", addonNamespace,
+			"--name", "dsf-e2e-auth-server", "--port=8080", "--target-port=8080",
+		))
+		Expect(err).NotTo(HaveOccurred())
+		_, err = utils.Run(exec.Command(
+			"kubectl", "rollout", "status", "deployment/dsf-e2e-auth-server",
+			"--namespace", addonNamespace, "--timeout=5m",
+		))
+		Expect(err).NotTo(HaveOccurred())
+
+		defer func() {
+			for _, args := range [][]string{
+				{"delete", "dynamicscorer", "e2e-secret-scorer", "--namespace", hubNamespace, "--ignore-not-found"},
+				{"delete", "addonplacementscores", "e2e-secret-score", "--namespace", loopbackClusterName, "--ignore-not-found"},
+				{"delete", "secret", "e2e-source-auth", "e2e-scoring-auth", "e2e-unrelated-secret",
+					"--namespace", addonNamespace, "--ignore-not-found"},
+				{"delete", "service", "dsf-e2e-auth-server", "--namespace", addonNamespace, "--ignore-not-found"},
+				{"delete", "deployment", "dsf-e2e-auth-server", "--namespace", addonNamespace, "--ignore-not-found"},
+			} {
+				_, _ = utils.Run(exec.Command("kubectl", args...))
+			}
+		}()
+
+		By("registering a scorer before its auth Secrets exist")
+		Expect(applySecretAuthScorer(true, true)).To(Succeed())
+		Eventually(agentLogs).WithTimeout(2 * time.Minute).WithPolling(time.Second).
+			Should(ContainSubstring("Failed to fetch source auth"))
+
+		By("creating the referenced Secrets and waiting for scoring to begin")
+		Expect(applyE2ESecret("e2e-source-auth", "source-v1")).To(Succeed())
+		Expect(applyE2ESecret("e2e-scoring-auth", "scoring-v1")).To(Succeed())
+		Eventually(authServerLogs).WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(ContainSubstring(authObservation("source", "Bearer source-v1")))
+		Eventually(authServerLogs).WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(ContainSubstring(authObservation("scoring", "Bearer scoring-v1")))
+		Eventually(func() string {
+			return kubectlJSONPath(
+				"get", "addonplacementscores", "e2e-secret-score", "--namespace", loopbackClusterName,
+				"-o", "jsonpath={.status.scores[0].value}",
+			)
+		}).WithTimeout(45 * time.Second).WithPolling(time.Second).Should(Equal("42"))
+
+		By("ignoring an unrelated Secret update")
+		beforeUnrelatedUpdate := configMapReconcileCount()
+		Expect(applyE2ESecret("e2e-unrelated-secret", "unrelated-token")).To(Succeed())
+		Consistently(configMapReconcileCount).WithTimeout(5 * time.Second).WithPolling(time.Second).
+			Should(Equal(beforeUnrelatedUpdate))
+
+		By("refreshing both tokens before the ConfigMap resync fallback")
+		Expect(applyE2ESecret("e2e-source-auth", "source-v2")).To(Succeed())
+		Expect(applyE2ESecret("e2e-scoring-auth", "scoring-v2")).To(Succeed())
+		Eventually(authServerLogs).WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(ContainSubstring(authObservation("source", "Bearer source-v2")))
+		Eventually(authServerLogs).WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(ContainSubstring(authObservation("scoring", "Bearer scoring-v2")))
+
+		By("stopping the scorer after its source Secret is deleted")
+		stopsBeforeDelete := strings.Count(agentLogs(), "Stopped scoring worker for e2e-secret-score")
+		_, err = utils.Run(exec.Command(
+			"kubectl", "delete", "secret", "e2e-source-auth", "--namespace", addonNamespace,
+		))
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func() int {
+			return strings.Count(agentLogs(), "Stopped scoring worker for e2e-secret-score")
+		}).WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(BeNumerically(">", stopsBeforeDelete))
+		stoppedRequestCount := authRequestCount()
+		Consistently(authRequestCount).WithTimeout(5 * time.Second).WithPolling(time.Second).
+			Should(Equal(stoppedRequestCount))
+
+		By("restarting scoring when the Secret is restored")
+		beforeScoringAfterRestore := authObservationCount("scoring")
+		Expect(applyE2ESecret("e2e-source-auth", "source-v3")).To(Succeed())
+		Eventually(authServerLogs).WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(ContainSubstring(authObservation("source", "Bearer source-v3")))
+		Eventually(func() int { return authObservationCount("scoring") }).
+			WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(BeNumerically(">", beforeScoringAfterRestore))
+		Eventually(lastAuthObservation).WithArguments("scoring").WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(ContainSubstring(authObservation("scoring", "Bearer scoring-v2")))
+
+		By("stopping scoring when the Secret no longer contains the configured key")
+		stopsBeforeMissingKey := strings.Count(agentLogs(), "Stopped scoring worker for e2e-secret-score")
+		Expect(replaceE2ESecretData("e2e-source-auth", "other", "value-without-token")).To(Succeed())
+		Eventually(func() int {
+			return strings.Count(agentLogs(), "Stopped scoring worker for e2e-secret-score")
+		}).WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(BeNumerically(">", stopsBeforeMissingKey))
+
+		By("clearing the cached token when the scorer config removes its Secret reference")
+		beforeSourceAfterRefRemoval := authObservationCount("source")
+		beforeScoringAfterRefRemoval := authObservationCount("scoring")
+		Expect(applySecretAuthScorer(false, true)).To(Succeed())
+		Eventually(func() int { return authObservationCount("source") }).
+			WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(BeNumerically(">", beforeSourceAfterRefRemoval))
+		Eventually(lastAuthObservation).WithArguments("source").WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(ContainSubstring(authObservation("source", "")))
+		Eventually(func() int { return authObservationCount("scoring") }).
+			WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(BeNumerically(">", beforeScoringAfterRefRemoval))
+		Eventually(lastAuthObservation).WithArguments("scoring").WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(ContainSubstring(authObservation("scoring", "Bearer scoring-v2")))
+
+		By("clearing the scoring token when its Secret reference is removed")
+		beforeScoringAfterScoringRefRemoval := authObservationCount("scoring")
+		Expect(applySecretAuthScorer(false, false)).To(Succeed())
+		Eventually(func() int { return authObservationCount("scoring") }).
+			WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(BeNumerically(">", beforeScoringAfterScoringRefRemoval))
+		Eventually(lastAuthObservation).WithArguments("scoring").WithTimeout(45 * time.Second).WithPolling(time.Second).
+			Should(ContainSubstring(authObservation("scoring", "")))
+	})
 })
+
+func applySecretAuthScorer(sourceAuth, scoringAuth bool) error {
+	sourceAuthYAML := ""
+	if sourceAuth {
+		sourceAuthYAML = "    auth:\n" +
+			"      tokenSecretRef:\n" +
+			"        name: e2e-source-auth\n" +
+			"        key: token\n"
+	}
+	scoringAuthYAML := ""
+	if scoringAuth {
+		scoringAuthYAML = "    auth:\n" +
+			"      tokenSecretRef:\n" +
+			"        name: e2e-scoring-auth\n" +
+			"        key: token\n"
+	}
+	manifest := fmt.Sprintf(`apiVersion: dynamic-scoring.open-cluster-management.io/v1alpha1
+kind: DynamicScoringConfig
+metadata:
+  name: dynamic-scoring-config
+  namespace: %s
+spec:
+  masks: []
+---
+apiVersion: dynamic-scoring.open-cluster-management.io/v1alpha1
+kind: DynamicScorer
+metadata:
+  name: e2e-secret-scorer
+  namespace: %s
+spec:
+  description: Scorer used to test Secret refresh behavior
+  configURL: http://dsf-e2e-auth-server.%s.svc.cluster.local:8080/config
+  configSyncMode: None
+  location: Internal
+  scoreDestination: AddOnPlacementScore
+  scoreDimensionFormat: "${scoreName}"
+  source:
+    type: Prometheus
+    host: http://dsf-e2e-auth-server.%s.svc.cluster.local:8080
+    path: /api/v1/query_range
+    params:
+      query: up
+      range: 60
+      step: 15
+%s  scoring:
+    host: http://dsf-e2e-auth-server.%s.svc.cluster.local:8080
+    path: /scoring
+    params:
+      name: e2e-secret-score
+      interval: 2
+%s`, hubNamespace, hubNamespace, addonNamespace, addonNamespace, sourceAuthYAML, addonNamespace, scoringAuthYAML)
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+func applyE2ESecret(name, token string) error {
+	return applyE2ESecretWithKey(name, "token", token)
+}
+
+func applyE2ESecretWithKey(name, key, value string) error {
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+stringData:
+  %s: %s
+`, name, addonNamespace, key, value)
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+func replaceE2ESecretData(name, key, value string) error {
+	patch := fmt.Sprintf(
+		`{"data":{"token":null,%q:%q}}`, key, base64.StdEncoding.EncodeToString([]byte(value)),
+	)
+	_, err := utils.Run(exec.Command(
+		"kubectl", "patch", "secret", name, "--namespace", addonNamespace,
+		"--type=merge", "--patch", patch,
+	))
+	return err
+}
+
+func authServerLogs() string {
+	output, err := utils.Run(exec.Command(
+		"kubectl", "logs", "deployment/dsf-e2e-auth-server", "--namespace", addonNamespace,
+	))
+	if err != nil {
+		return ""
+	}
+	return output
+}
+
+func agentLogs() string {
+	output, err := utils.Run(exec.Command(
+		"kubectl", "logs", "deployment/dynamic-scoring-agent", "--namespace", addonNamespace,
+	))
+	if err != nil {
+		return ""
+	}
+	return output
+}
+
+func authObservation(endpoint, token string) string {
+	return fmt.Sprintf("e2e-auth path=%s authorization=%q", endpoint, token)
+}
+
+func authRequestCount() int {
+	return strings.Count(authServerLogs(), "e2e-auth path=")
+}
+
+func authObservationCount(endpoint string) int {
+	return strings.Count(authServerLogs(), "e2e-auth path="+endpoint+" ")
+}
+
+func configMapReconcileCount() int {
+	return strings.Count(agentLogs(), "Reconciling ConfigMap: dynamic-scoring/dynamic-scoring-config")
+}
+
+func lastAuthObservation(endpoint string) string {
+	lines := strings.Split(authServerLogs(), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "e2e-auth path="+endpoint+" ") {
+			return lines[i]
+		}
+	}
+	return ""
+}
 
 func bootstrapOCM() error {
 	joinFile, err := os.CreateTemp("", "dsf-e2e-join-*.sh")
@@ -371,6 +627,13 @@ func e2eMockScorerImage() string {
 		return image
 	}
 	return "hashicorp/http-echo:1.0"
+}
+
+func e2eAuthServerImage() string {
+	if image := os.Getenv("E2E_AUTH_SERVER_IMAGE"); image != "" {
+		return image
+	}
+	return "dynamic-scoring-framework-e2e-auth-server:e2e"
 }
 
 func kubectlJSONPath(args ...string) string {
