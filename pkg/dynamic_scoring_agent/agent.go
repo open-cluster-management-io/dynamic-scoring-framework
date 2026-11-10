@@ -495,8 +495,8 @@ func (c *agentController) stopScoringWorker(scoreName string) {
 	})
 	if exists {
 		klog.Infof("Stopped scoring worker for %s", scoreName)
+		klog.Infof("Deleted metrics for stopped worker %s", scoreName)
 	}
-	klog.Infof("Deleted metrics for stopped worker %s", scoreName)
 }
 
 func referencedSecretNames(summaries []common.ScorerSummary) map[string]struct{} {
