@@ -114,10 +114,10 @@ func TestFetchAuthClearsCachedTokenWhenReferenceIsRemovedOrInvalid(t *testing.T)
 		ScoringEndpointAuthKey:  "token",
 	}
 
-	if err := controller.fetchSourceAuth(context.Background(), summary); err != nil {
+	if err := controller.fetchSourceAuth(t.Context(), summary); err != nil {
 		t.Fatalf("fetch source auth: %v", err)
 	}
-	if err := controller.fetchScoringAuth(context.Background(), summary); err != nil {
+	if err := controller.fetchScoringAuth(t.Context(), summary); err != nil {
 		t.Fatalf("fetch scoring auth: %v", err)
 	}
 	if got := controller.getSourceAuth(summary.ScoreName); got != "fresh-token" {
@@ -131,10 +131,10 @@ func TestFetchAuthClearsCachedTokenWhenReferenceIsRemovedOrInvalid(t *testing.T)
 	summary.SourceEndpointAuthKey = ""
 	summary.ScoringEndpointAuthName = ""
 	summary.ScoringEndpointAuthKey = ""
-	if err := controller.fetchSourceAuth(context.Background(), summary); err != nil {
+	if err := controller.fetchSourceAuth(t.Context(), summary); err != nil {
 		t.Fatalf("fetch removed source auth: %v", err)
 	}
-	if err := controller.fetchScoringAuth(context.Background(), summary); err != nil {
+	if err := controller.fetchScoringAuth(t.Context(), summary); err != nil {
 		t.Fatalf("fetch removed scoring auth: %v", err)
 	}
 	if got := controller.getSourceAuth(summary.ScoreName); got != "" {
@@ -150,10 +150,10 @@ func TestFetchAuthClearsCachedTokenWhenReferenceIsRemovedOrInvalid(t *testing.T)
 	summary.SourceEndpointAuthKey = "missing-key"
 	summary.ScoringEndpointAuthName = "auth-secret"
 	summary.ScoringEndpointAuthKey = "missing-key"
-	if err := controller.fetchSourceAuth(context.Background(), summary); err == nil {
+	if err := controller.fetchSourceAuth(t.Context(), summary); err == nil {
 		t.Fatal("expected source auth fetch to fail for a missing key")
 	}
-	if err := controller.fetchScoringAuth(context.Background(), summary); err == nil {
+	if err := controller.fetchScoringAuth(t.Context(), summary); err == nil {
 		t.Fatal("expected scoring auth fetch to fail for a missing key")
 	}
 	if got := controller.getSourceAuth(summary.ScoreName); got != "" {
@@ -206,7 +206,7 @@ func TestPerformScoringUsesLatestAuthTokens(t *testing.T) {
 	} {
 		controller.setSourceAuth(summary.ScoreName, tokens.source)
 		controller.setScoringAuth(summary.ScoreName, tokens.scoring)
-		if err := controller.performScoring(context.Background(), summary); err != nil {
+		if err := controller.performScoring(t.Context(), summary); err != nil {
 			t.Fatalf("perform scoring: %v", err)
 		}
 
@@ -224,6 +224,49 @@ func TestPerformScoringUsesLatestAuthTokens(t *testing.T) {
 		if got := <-scoringTokens; got != wantScoring {
 			t.Errorf("scoring Authorization = %q; want %q", got, wantScoring)
 		}
+	}
+}
+
+func TestPerformScoringIncludesClusterNameOnlyWhenEnabled(t *testing.T) {
+	requests := make(chan common.ScoringRequest, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request common.ScoringRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode scoring request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		requests <- request
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	controller := &agentController{
+		clusterName:       "cluster-a",
+		sourceAuth:        make(map[string]string),
+		scoringAuth:       make(map[string]string),
+		httpClient:        server.Client(),
+		previousLabelSets: make(map[string]map[string]struct{}),
+	}
+	summary := &common.ScorerSummary{
+		ScoreName:        "score-a",
+		ScoringEndpoint:  server.URL,
+		ScoreDestination: common.ScoreDestinationNone,
+	}
+
+	if err := controller.performScoring(t.Context(), summary); err != nil {
+		t.Fatalf("perform scoring with cluster name disabled: %v", err)
+	}
+	if request := <-requests; request.ClusterName != "" {
+		t.Fatalf("clusterName = %q; want omitted", request.ClusterName)
+	}
+
+	summary.IncludeClusterName = true
+	if err := controller.performScoring(t.Context(), summary); err != nil {
+		t.Fatalf("perform scoring with cluster name enabled: %v", err)
+	}
+	if request := <-requests; request.ClusterName != "cluster-a" {
+		t.Fatalf("clusterName = %q; want cluster-a", request.ClusterName)
 	}
 }
 
@@ -250,7 +293,7 @@ func TestScoringWorkerResetsTickerWhenIntervalChanges(t *testing.T) {
 		ScoreDestination: common.ScoreDestinationNone,
 	}
 	worker.setSummary(initialSummary, time.Second)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -289,7 +332,7 @@ func TestConfigMapSkipsScorersWithInvalidIntervals(t *testing.T) {
 				const scoreName = "score-a"
 				summary := common.ScorerSummary{ScoreName: scoreName, ScoringInterval: interval}
 				controller := newTestAgentController(t, fake.NewSimpleClientset(), []common.ScorerSummary{summary})
-				workerCtx, workerCancel := context.WithCancel(context.Background())
+				workerCtx, workerCancel := context.WithCancel(t.Context())
 				defer workerCancel()
 				if hasWorker {
 					controller.scoringWorkers[scoreName] = &ScoringWorker{cancel: workerCancel}
@@ -297,7 +340,7 @@ func TestConfigMapSkipsScorersWithInvalidIntervals(t *testing.T) {
 					controller.setScoringAuth(scoreName, "scoring-token")
 				}
 
-				controller.handleConfigMapUpdate(context.Background(), testConfigMap(t, []common.ScorerSummary{summary}))
+				controller.handleConfigMapUpdate(t.Context(), testConfigMap(t, []common.ScorerSummary{summary}))
 
 				if _, exists := controller.scoringWorkers[scoreName]; exists {
 					t.Fatal("scorer with invalid interval was started or left running")
@@ -346,11 +389,11 @@ func TestSyncIgnoresUnreferencedSecret(t *testing.T) {
 		nil, client, nil, configMapInformer, secretInformer, "cluster-a", "addon-a", namespace,
 	)
 	controller.referencedSecrets = map[string]struct{}{"referenced-secret": {}}
-	workerCtx, workerCancel := context.WithCancel(context.Background())
+	workerCtx, workerCancel := context.WithCancel(t.Context())
 	controller.scoringWorkers[summary.ScoreName] = &ScoringWorker{cancel: workerCancel}
 	controller.setSourceAuth(summary.ScoreName, "cached-token")
 
-	if err := controller.sync(context.Background(), nil, secretQueueKeyPrefix+namespace+"/unrelated-secret"); err != nil {
+	if err := controller.sync(t.Context(), nil, secretQueueKeyPrefix+namespace+"/unrelated-secret"); err != nil {
 		t.Fatalf("sync unrelated secret: %v", err)
 	}
 	if _, ok := controller.scoringWorkers[summary.ScoreName]; !ok {
@@ -377,7 +420,7 @@ func TestSyncReconcilesConfigMapWhenReferencedSecretAppears(t *testing.T) {
 	})
 	controller := newTestAgentController(t, client, []common.ScorerSummary{summary})
 	controller.referencedSecrets = map[string]struct{}{"auth-secret": {}}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	if err := controller.sync(ctx, nil, secretQueueKeyPrefix+namespace+"/auth-secret"); err != nil {
@@ -419,13 +462,13 @@ func TestSyncStopsScorerWhenReferencedSecretIsUnavailable(t *testing.T) {
 			client := fake.NewSimpleClientset(objects...)
 			controller := newTestAgentController(t, client, []common.ScorerSummary{summary})
 			controller.referencedSecrets = map[string]struct{}{"auth-secret": {}}
-			workerCtx, workerCancel := context.WithCancel(context.Background())
+			workerCtx, workerCancel := context.WithCancel(t.Context())
 			controller.scoringWorkers[summary.ScoreName] = &ScoringWorker{cancel: workerCancel}
 			controller.setSourceAuth(summary.ScoreName, "stale-source-token")
 			controller.setScoringAuth(summary.ScoreName, "stale-scoring-token")
 
 			if err := controller.sync(
-				context.Background(), nil, secretQueueKeyPrefix+namespace+"/auth-secret",
+				t.Context(), nil, secretQueueKeyPrefix+namespace+"/auth-secret",
 			); err != nil {
 				t.Fatalf("sync unavailable Secret: %v", err)
 			}
@@ -452,14 +495,14 @@ func TestSyncConfigMapClearsAuthWhenReferenceIsRemoved(t *testing.T) {
 	summary := common.ScorerSummary{ScoreName: "score-a", ScoringInterval: 3600}
 	client := fake.NewSimpleClientset()
 	controller := newTestAgentController(t, client, []common.ScorerSummary{summary})
-	workerCtx, workerCancel := context.WithCancel(context.Background())
+	workerCtx, workerCancel := context.WithCancel(t.Context())
 	defer workerCancel()
 	controller.scoringWorkers[summary.ScoreName] = &ScoringWorker{cancel: workerCancel}
 	controller.setSourceAuth(summary.ScoreName, "old-source-token")
 	controller.setScoringAuth(summary.ScoreName, "old-scoring-token")
 	controller.referencedSecrets = map[string]struct{}{"old-secret": {}}
 
-	if err := controller.syncConfigMap(context.Background(), namespace+"/"+common.DynamicScoringConfigName); err != nil {
+	if err := controller.syncConfigMap(t.Context(), namespace+"/"+common.DynamicScoringConfigName); err != nil {
 		t.Fatalf("sync ConfigMap without auth refs: %v", err)
 	}
 	if got := controller.getSourceAuth(summary.ScoreName); got != "" {
@@ -487,7 +530,7 @@ func TestStopScoringWorkerClearsAuthAndScoreMetric(t *testing.T) {
 		sourceAuth:     map[string]string{scoreName: "source-token"},
 		scoringAuth:    map[string]string{scoreName: "scoring-token"},
 	}
-	workerCtx, workerCancel := context.WithCancel(context.Background())
+	workerCtx, workerCancel := context.WithCancel(t.Context())
 	controller.scoringWorkers[scoreName] = &ScoringWorker{cancel: workerCancel}
 
 	controller.stopScoringWorker(scoreName)

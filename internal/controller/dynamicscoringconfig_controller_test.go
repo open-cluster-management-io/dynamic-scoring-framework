@@ -143,6 +143,26 @@ var _ = Describe("DynamicScoringConfig helpers", func() {
 		})
 	})
 
+	Context("cluster name config helper", func() {
+		It("prefers a value from /config, falls back to the CR, and defaults false", func() {
+			scorer := dynamicscoringv1alpha1.DynamicScorer{
+				Spec: dynamicscoringv1alpha1.DynamicScorerSpec{
+					IncludeClusterName: new(true),
+				},
+				Status: dynamicscoringv1alpha1.DynamicScorerStatus{
+					LastSyncedConfig: &common.Config{IncludeClusterName: new(false)},
+				},
+			}
+			Expect(getValidIncludeClusterName(scorer)).To(BeFalse())
+
+			scorer.Status.LastSyncedConfig.IncludeClusterName = nil
+			Expect(getValidIncludeClusterName(scorer)).To(BeTrue())
+
+			scorer.Spec.IncludeClusterName = nil
+			Expect(getValidIncludeClusterName(scorer)).To(BeFalse())
+		})
+	})
+
 	Context("dimension format helper", func() {
 		It("defaults when format is empty", func() {
 			scorer := dynamicscoringv1alpha1.DynamicScorer{}

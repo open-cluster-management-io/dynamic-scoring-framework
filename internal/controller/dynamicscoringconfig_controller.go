@@ -311,6 +311,7 @@ func buildClusterToSummaries(
 			summary := common.ScorerSummary{
 				Name:                    scorer.Name,
 				ScoreName:               scoreName,
+				IncludeClusterName:      getValidIncludeClusterName(scorer),
 				SourceType:              sourceType,
 				SourceEndpoint:          sourceFullEndpoint,
 				SourceEndpointAuthName:  sourceEndpointAuthName,
@@ -439,6 +440,16 @@ func deleteConfigManifestWork(ctx context.Context, c client.Client, reader clien
 
 	klog.InfoS("Deleted ManifestWork", "name", existing.Name, "namespace", existing.Namespace)
 	return nil
+}
+
+func getValidIncludeClusterName(scorer dynamicscoringv1alpha1.DynamicScorer) bool {
+	if scorer.Status.LastSyncedConfig != nil && scorer.Status.LastSyncedConfig.IncludeClusterName != nil {
+		return *scorer.Status.LastSyncedConfig.IncludeClusterName
+	}
+	if scorer.Spec.IncludeClusterName != nil {
+		return *scorer.Spec.IncludeClusterName
+	}
+	return false
 }
 
 func getValidSourceType(scorer dynamicscoringv1alpha1.DynamicScorer) (common.SourceType, error) {

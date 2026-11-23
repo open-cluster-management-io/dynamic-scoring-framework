@@ -56,6 +56,12 @@ spec:
                 description: Description provides a brief explanation of the Dynamic
                   Scorer's purpose.
                 type: string
+              includeClusterName:
+                description: |-
+                  IncludeClusterName controls whether the agent includes its managed cluster name in requests to the scoring API.
+                  When /config specifies this value, it takes precedence over this field. Otherwise, this field is used.
+                  If neither source specifies a value, the agent does not include the cluster name.
+                type: boolean
               location:
                 description: |-
                   Location indicates whether the Dynamic Scorer is hosted within the cluster (`Internal`)
@@ -232,6 +238,8 @@ spec:
                 properties:
                   description:
                     type: string
+                  includeClusterName:
+                    type: boolean
                   name:
                     type: string
                   scoring:

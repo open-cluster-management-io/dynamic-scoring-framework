@@ -95,6 +95,10 @@ type DynamicScorerSpec struct {
 	Source SourceConfigWithAuth `json:"source,omitempty"`
 	// Scoring defines the scoring API configuration for the Dynamic Scoring Agent to obtain scores.
 	Scoring ScoringConfigWithAuth `json:"scoring,omitempty"`
+	// IncludeClusterName controls whether the agent includes its managed cluster name in requests to the scoring API.
+	// When /config specifies this value, it takes precedence over this field. Otherwise, this field is used.
+	// If neither source specifies a value, the agent does not include the cluster name.
+	IncludeClusterName *bool `json:"includeClusterName,omitempty"`
 	// +kubebuilder:validation:Enum=AddOnPlacementScore;None
 	// ScoreDestination specifies where the Dynamic Scoring Agent should send the computed scores.
 	// For example, `AddOnPlacementScore` indicates the scores should be sent to the AddOnPlacementScore API.
