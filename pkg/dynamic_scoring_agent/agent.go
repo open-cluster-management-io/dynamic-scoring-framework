@@ -651,6 +651,9 @@ func (c *agentController) performScoring(ctx context.Context, summary *common.Sc
 	}
 
 	scoringPayload := common.ScoringRequest{Data: scoringInputData}
+	if summary.IncludeClusterName {
+		scoringPayload.ClusterName = c.clusterName
+	}
 	payloadBytes, err := json.Marshal(scoringPayload)
 
 	if err != nil {

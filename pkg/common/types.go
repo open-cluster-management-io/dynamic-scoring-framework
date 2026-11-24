@@ -57,10 +57,31 @@ const (
 // Scoring APIs must implement a config endpoint that serves this schema.
 
 type Config struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Source      SourceConfig  `json:"source"`
-	Scoring     ScoringConfig `json:"scoring"`
+	Name               string        `json:"name"`
+	Description        string        `json:"description"`
+	IncludeClusterName *bool         `json:"includeClusterName,omitempty"`
+	Source             SourceConfig  `json:"source"`
+	Scoring            ScoringConfig `json:"scoring"`
+}
+
+// DeepCopyInto copies this Config and its pointer fields into out.
+func (in *Config) DeepCopyInto(out *Config) {
+	*out = *in
+	if in.IncludeClusterName != nil {
+		includeClusterName := new(bool)
+		*includeClusterName = *in.IncludeClusterName
+		out.IncludeClusterName = includeClusterName
+	}
+}
+
+// DeepCopy creates a deep copy of this Config.
+func (in *Config) DeepCopy() *Config {
+	if in == nil {
+		return nil
+	}
+	out := new(Config)
+	in.DeepCopyInto(out)
+	return out
 }
 
 // SourceConfig represents the source configuration.
@@ -116,6 +137,7 @@ type Mask struct {
 type ScorerSummary struct {
 	Name                    string           `json:"name"`
 	ScoreName               string           `json:"scoreName"`
+	IncludeClusterName      bool             `json:"includeClusterName"`
 	SourceType              SourceType       `json:"sourceType"`
 	SourceEndpoint          string           `json:"sourceEndpoint"`
 	SourceEndpointAuthName  string           `json:"sourceEndpointAuthName"`
@@ -184,7 +206,8 @@ type PrometheusMatrixSeries struct {
 //	  "data": [ {"metric": {...}, "values": [[<ts>, "<val>"], ...]}, ... ]
 //	}
 type ScoringRequest struct {
-	Data []PrometheusMatrixSeries `json:"data"`
+	ClusterName string                   `json:"clusterName,omitempty"`
+	Data        []PrometheusMatrixSeries `json:"data"`
 }
 
 // ScoringResponse is the JSON response schema expected from a scorer.
